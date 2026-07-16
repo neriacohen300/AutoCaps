@@ -331,3 +331,60 @@ document.getElementById('btnSaveSubtitles').addEventListener('click', () => {
         document.getElementById('bulkEditorContainer').style.display = "none";
     });
 });
+
+
+
+document.getElementById('btnFindReplace').addEventListener('click', () => {
+    const findStr = document.getElementById('findText').value;
+    const replaceStr = document.getElementById('replaceText').value;
+    const statusLabel = document.getElementById('findReplaceStatus');
+
+    // בדיקת תקינות - האם המשתמש הזין משהו לחיפוש
+    if (!findStr) {
+        statusLabel.innerText = "נא להזין מילה לחיפוש.";
+        return;
+    }
+
+    // נוודא שיש לנו כתוביות במערך
+    if (typeof parsedSubtitles === 'undefined' || parsedSubtitles.length === 0) {
+        statusLabel.innerText = "אין כתוביות טעונות כרגע במערכת.";
+        return;
+    }
+
+    let matchCount = 0;
+    
+    // יוצרים ביטוי רגולרי:
+    // 'g' - Global (מוצא את כל המופעים, לא רק את הראשון)
+    // 'i' - Case Insensitive (מתעלם מאותיות גדולות/קטנות באנגלית)
+    // הערה: יש לבצע Escape לתווים מיוחדים אם המילה מכילה אותם, אך לטקסט רגיל זה מצוין.
+    // פונקציית עזר ל-escape:
+    const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const safeFindStr = escapeRegExp(findStr);
+    const regex = new RegExp(safeFindStr, 'gi');
+
+    // עוברים על כל בלוק כתובית ומחליפים
+    parsedSubtitles.forEach(sub => {
+        if (regex.test(sub.text)) {
+            // ספירת המופעים שהוחלפו בבלוק הנוכחי
+            const matches = sub.text.match(regex);
+            matchCount += matches ? matches.length : 0;
+            
+            // ביצוע ההחלפה בפועל
+            sub.text = sub.text.replace(regex, replaceStr);
+        }
+    });
+
+    // עדכון המשתמש בתוצאות
+    if (matchCount > 0) {
+        statusLabel.innerText = `הוחלפו ${matchCount} מופעים בהצלחה!`;
+        statusLabel.style.color = "#4CAF50"; // צבע ירוק להצלחה
+        
+        // אם כבר יש לך את פונקציית רינדור העורך המרוכז, שחרר את ההערה כדי שהתצוגה תתרענן אוטומטית:
+        // if (typeof renderBulkEditor === 'function') {
+        //     renderBulkEditor(parsedSubtitles);
+        // }
+    } else {
+        statusLabel.innerText = "לא נמצאו מופעים למילה זו.";
+        statusLabel.style.color = "var(--text-secondary)";
+    }
+});
