@@ -130,19 +130,14 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
         log("SRT exists: " + fs.existsSync(srtPath));
         
         if (code === 0 && fs.existsSync(srtPath)) {
-            statusDiv.innerText = "התמלול הסתיים! טוען עורך...";
-            
-            // קריאת קובץ ה-SRT
-            const srtContent = fs.readFileSync(srtPath, 'utf8');
-            parsedSubtitles = parseSRT(srtContent); // שמירה במשתנה גלובלי
-            currentSrtPath = srtPath;
-            currentRange = range;
-            
-            // הצגת הממשק
-            renderBulkEditor(parsedSubtitles);
-            document.getElementById('bulkEditorContainer').style.display = "block";
-            btnExport.disabled = false;
-            statusDiv.innerText = "ניתן לערוך את הכתוביות למטה.";
+            statusDiv.innerText = "התמלול הסתיים, מייבא לפרמייר...";
+            // העברת ה-range לפונקציית הייבוא ב-ExtendScript
+            const importScript = `importAndPlaceSRT("${srtPath.replace(/\\/g, '\\\\')}", "${range}")`;
+            csInterface.evalScript(importScript, (importResult) => {
+                log("Import result: " + importResult);
+                statusDiv.innerText = "התהליך הושלם בהצלחה!";
+                btnExport.disabled = false;
+            });
         } else {
             statusDiv.innerText = "שגיאה בתמלול.";
             btnExport.disabled = false;
@@ -260,131 +255,4 @@ btnCutSilence.addEventListener('click', () => {
             btnCutSilence.disabled = false;
         }
     });
-});
-
-
-
-let parsedSubtitles = [];
-let currentSrtPath = "";
-let currentRange = "";
-
-// 1. פונקציה שהופכת SRT למערך
-function parseSRT(srtText) {
-    const blocks = srtText.trim().replace(/\r\n/g, '\n').split('\n\n');
-    return blocks.map(block => {
-        const lines = block.split('\n');
-        return {
-            id: lines[0],
-            time: lines[1],
-            text: lines.slice(2).join('\n')
-        };
-    });
-}
-
-// 2. פונקציה שהופכת מערך חזרה ל-SRT
-function stringifySRT(subsArray) {
-    return subsArray.map(sub => `${sub.id}\n${sub.time}\n${sub.text}`).join('\n\n') + '\n';
-}
-
-// 3. הצגת הכתוביות בעורך ה-HTML
-function renderBulkEditor(subsArray) {
-    const listDiv = document.getElementById('subtitlesList');
-    listDiv.innerHTML = ''; // ניקוי
-
-    subsArray.forEach((sub, index) => {
-        const row = document.createElement('div');
-        row.style = "display: flex; gap: 10px; align-items: flex-start;";
-
-        const timeLabel = document.createElement('span');
-        timeLabel.innerText = sub.id; // או להציג זמנים, מה שיותר נוח לך
-        timeLabel.style = "font-size: 10px; color: var(--text-secondary); width: 25px; margin-top: 5px;";
-
-        const input = document.createElement('textarea');
-        input.value = sub.text;
-        input.rows = 2;
-        input.style = "flex: 1; background: var(--bg-main); color: var(--text-primary); border: 1px solid var(--border-color); padding: 5px; border-radius: 4px; resize: none;";
-        
-        // עדכון המערך בזמן אמת בעת הקלדה
-        input.addEventListener('input', (e) => {
-            parsedSubtitles[index].text = e.target.value;
-        });
-
-        row.appendChild(timeLabel);
-        row.appendChild(input);
-        listDiv.appendChild(row);
-    });
-}
-
-// 4. מאזין ללחיצה על שמירה וייבוא
-document.getElementById('btnSaveSubtitles').addEventListener('click', () => {
-    const statusDiv = document.getElementById('status');
-    statusDiv.innerText = "שומר וייבא לפרמייר...";
-    
-    // יצירת SRT חדש
-    const newSrtContent = stringifySRT(parsedSubtitles);
-    fs.writeFileSync(currentSrtPath, newSrtContent, 'utf8');
-
-    // ייבוא דרך ExtendScript בדיוק כמו מקודם
-    const importScript = `importAndPlaceSRT("${currentSrtPath.replace(/\\/g, '\\\\')}", "${currentRange}")`;
-    csInterface.evalScript(importScript, (importResult) => {
-        statusDiv.innerText = "התהליך הושלם בהצלחה!";
-        document.getElementById('bulkEditorContainer').style.display = "none";
-    });
-});
-
-
-
-document.getElementById('btnFindReplace').addEventListener('click', () => {
-    const findStr = document.getElementById('findText').value;
-    const replaceStr = document.getElementById('replaceText').value;
-    const statusLabel = document.getElementById('findReplaceStatus');
-
-    // בדיקת תקינות - האם המשתמש הזין משהו לחיפוש
-    if (!findStr) {
-        statusLabel.innerText = "נא להזין מילה לחיפוש.";
-        return;
-    }
-
-    // נוודא שיש לנו כתוביות במערך
-    if (typeof parsedSubtitles === 'undefined' || parsedSubtitles.length === 0) {
-        statusLabel.innerText = "אין כתוביות טעונות כרגע במערכת.";
-        return;
-    }
-
-    let matchCount = 0;
-    
-    // יוצרים ביטוי רגולרי:
-    // 'g' - Global (מוצא את כל המופעים, לא רק את הראשון)
-    // 'i' - Case Insensitive (מתעלם מאותיות גדולות/קטנות באנגלית)
-    // הערה: יש לבצע Escape לתווים מיוחדים אם המילה מכילה אותם, אך לטקסט רגיל זה מצוין.
-    // פונקציית עזר ל-escape:
-    const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const safeFindStr = escapeRegExp(findStr);
-    const regex = new RegExp(safeFindStr, 'gi');
-
-    // עוברים על כל בלוק כתובית ומחליפים
-    parsedSubtitles.forEach(sub => {
-        if (regex.test(sub.text)) {
-            // ספירת המופעים שהוחלפו בבלוק הנוכחי
-            const matches = sub.text.match(regex);
-            matchCount += matches ? matches.length : 0;
-            
-            // ביצוע ההחלפה בפועל
-            sub.text = sub.text.replace(regex, replaceStr);
-        }
-    });
-
-    // עדכון המשתמש בתוצאות
-    if (matchCount > 0) {
-        statusLabel.innerText = `הוחלפו ${matchCount} מופעים בהצלחה!`;
-        statusLabel.style.color = "#4CAF50"; // צבע ירוק להצלחה
-        
-        // אם כבר יש לך את פונקציית רינדור העורך המרוכז, שחרר את ההערה כדי שהתצוגה תתרענן אוטומטית:
-        // if (typeof renderBulkEditor === 'function') {
-        //     renderBulkEditor(parsedSubtitles);
-        // }
-    } else {
-        statusLabel.innerText = "לא נמצאו מופעים למילה זו.";
-        statusLabel.style.color = "var(--text-secondary)";
-    }
 });
