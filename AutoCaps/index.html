@@ -7,34 +7,69 @@
 </head>
 <body>
     <div class="container">
-        <h2>AutoCaps</h2>
+        <div class="header">
+            <h2>AutoCaps</h2>
+            <span class="subtitle">תמלול וכתוביות אוטומטיות</span>
+        </div>
         
-        <label>שפה:</label>
-        <select id="language">
-            <option value="he">עברית</option>
-            <option value="en">אנגלית</option>
-        </select>
+        <div class="section">
+            <div class="section-title">הגדרות פרויקט</div>
+            
+            <div class="field-group">
+                <label for="language">שפת התמלול</label>
+                <select id="language">
+                    <option value="he">עברית (Hebrew)</option>
+                    <option value="en">אנגלית (English)</option>
+                </select>
+            </div>
 
-        <label>טווח טיימליין:</label>
-        <select id="timelineRange">
-            <option value="entire">כל הטיימליין</option>
-            <option value="inOut">In/Out בלבד</option>
-        </select>
+            <div class="field-group">
+                <label for="timelineRange">טווח בטיימליין</label>
+                <select id="timelineRange">
+                    <option value="entire">כל הטיימליין (Entire Sequence)</option>
+                    <option value="inOut">In/Out בלבד</option>
+                </select>
+            </div>
+        </div>
 
-        <label>מילים בשורה (מקסימום):</label>
-        <input type="number" id="maxWords" value="8" min="1">
+        <div class="section">
+            <div class="section-title">הגדרות כתוביות</div>
+            
+            <div class="field-row">
+                <div class="field-group">
+                    <label for="maxWords">מילים בשורה</label>
+                    <input type="number" id="maxWords" value="8" min="1">
+                </div>
 
-        <label>שורות בכתובית (מקסימום):</label>
-        <input type="number" id="maxLines" value="2" min="1">
+                <div class="field-group">
+                    <label for="maxLines">שורות בכתובית</label>
+                    <input type="number" id="maxLines" value="2" min="1">
+                </div>
+            </div>
 
-        <label>עיבוד (GPU/CPU):</label>
-        <select id="deviceSelect">
-            <option value="cuda">GPU (CUDA)</option>
-            <option value="cpu">CPU</option>
-        </select>
+            <label class="checkbox-wrapper" for="removePunctuation">
+                <input type="checkbox" id="removePunctuation">
+                <span class="custom-checkbox"></span>
+                <span class="checkbox-text">הסרת סימני פיסוק (מראה נקי)</span>
+            </label>
+        </div>
 
-        <button id="btnExport">יצירת כתוביות</button>
-        <div id="status">מוכן...</div>
+        <div class="section">
+            <div class="section-title">חומרה ועיבוד</div>
+            
+            <div class="field-group">
+                <label for="deviceSelect">מנוע עיבוד</label>
+                <select id="deviceSelect">
+                    <option value="cuda">GPU (NVIDIA CUDA) - מהיר</option>
+                    <option value="cpu">CPU (מעבד) - איטי</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="action-zone">
+            <button id="btnExport">יצירת כתוביות בטיימליין</button>
+            <div id="status">מוכן לעבודה...</div>
+        </div>
     </div>
 
     <script src="js/CSInterface.js"></script>

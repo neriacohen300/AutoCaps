@@ -39,6 +39,8 @@ btnExport.addEventListener('click', async () => {
     const maxWords = document.getElementById('maxWords').value;
     const maxLines = document.getElementById('maxLines').value;
     const device = document.getElementById('deviceSelect').value;
+    // קריאת המצב של תיבת הסימון החדשה
+    const removePunctuation = document.getElementById('removePunctuation').checked;
 
     const audioOutPath = path.join(Config.tempDir, `autocaps_audio_${Date.now()}.wav`);
     const srtOutPath = path.join(Config.tempDir, `autocaps_subs_${Date.now()}.srt`);
@@ -48,6 +50,7 @@ btnExport.addEventListener('click', async () => {
     log("audioOutPath: " + audioOutPath);
     log("presetPath: " + presetPath);
     log("range: " + range);
+    log("removePunctuation: " + removePunctuation);
 
     const extendScriptCall = `exportAudioForTranscription("${audioOutPath.replace(/\\/g, '\\\\')}", "${range}", "${presetPath.replace(/\\/g, '\\\\')}")`;
     
@@ -67,8 +70,8 @@ btnExport.addEventListener('click', async () => {
         waitForFile(audioOutPath, 60000, () => {
             log("WAV file ready, size: " + fs.statSync(audioOutPath).size);
             statusDiv.innerText = "מתמלל... (אנא המתן)";
-            // העברת range כפרמטר נוסף
-            runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device, range);
+            // העברת removePunctuation כפרמטר נוסף
+            runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device, range, removePunctuation);
         }, () => {
             log("WAV file never appeared!");
             statusDiv.innerText = "שגיאה: קובץ WAV לא נוצר";
@@ -77,7 +80,7 @@ btnExport.addEventListener('click', async () => {
     });
 });
 
-function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device, range) {
+function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device, range, removePunctuation) {
     const args = [
         audioPath, srtPath,
         "--language", language,
@@ -87,6 +90,11 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
         "--max-words-per-line", maxWords,
         "--max-lines-per-subtitle", maxLines
     ];
+
+    // אם המשתמש סימן את התיבה, נוסיף את דגל הסרת סימני הפיסוק לארגומנטים של ה-EXE
+    if (removePunctuation) {
+        args.push("--remove-punctuation");
+    }
 
     log("EXE path: " + Config.exePath);
     log("EXE exists: " + fs.existsSync(Config.exePath));

@@ -281,7 +281,26 @@ def _group_words_into_cues(
     return cues
 
 
-def _cues_to_timed_entries(cues: list[list[dict]], min_display_sec: float) -> list[tuple[float, float, str]]:
+def _clean_punctuation(text: str) -> str:
+    """
+    פונקציית עזר להסרת סימני פיסוק מהמילים.
+    משאירה גרשיים וגרש פנימיים המרכיבים קיצורים בעברית (כמו צה"ל או ד"ר)
+    אך מסירה מירכאות חיצוניות המקיפות את המילה.
+    """
+    # רשימת סימני פיסוק כלליים ועבריים להסרה
+    to_remove = '.?!:;׃…,,()[]{}' + '/;<>=-+*&^%$#@~`|\\_–—'
+    table = str.maketrans("", "", to_remove)
+    text = text.translate(table)
+    # הסרת מירכאות/גרשים מקצוות המילה בלבד (למשל: "שלום" -> שלום, 'היי' -> היי)
+    text = text.strip('\'"')
+    return text
+
+
+def _cues_to_timed_entries(
+    cues: list[list[dict]], 
+    min_display_sec: float, 
+    remove_punctuation: bool = False
+) -> list[tuple[float, float, str]]:
     """
     Turn word cues into (start, end, text) triples, enforcing a minimum
     on-screen duration and preventing any overlap with the previous entry.
@@ -289,7 +308,14 @@ def _cues_to_timed_entries(cues: list[list[dict]], min_display_sec: float) -> li
     entries: list[tuple[float, float, str]] = []
     last_end = 0.0
     for cue in cues:
-        text = " ".join(w["text"] for w in cue).strip()
+        words_text = []
+        for w in cue:
+            t = w["text"]
+            if remove_punctuation:
+                t = _clean_punctuation(t)
+            words_text.append(t)
+
+        text = " ".join(words_text).strip()
         if not text:
             continue
         start = cue[0]["start"] if cue[0]["start"] is not None else last_end
@@ -355,6 +381,7 @@ def transcribe(
     max_lines_per_subtitle: int | None,
     cue_gap_sec: float,
     min_cue_duration: float,
+    remove_punctuation: bool, # פרמטר חדש שהתווסף
 ) -> None:
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -440,8 +467,10 @@ def transcribe(
         word_stream.extend(_flatten_words(segment))
 
     # ── Regroup words into short cues, then render SRT blocks ─────────────────
+    # חלוקת המשפטים מתרחשת לפי המבנה המקורי (נקודות, פסיקים וכו') כדי לשמור על מקצב טבעי,
+    # אך רק בשלב ההרכבה הטקסט עצמו מנוקה במידה והדגל פעיל.
     cues = _group_words_into_cues(word_stream, max_words_per_line, cue_gap_sec)
-    timed_entries = _cues_to_timed_entries(cues, min_cue_duration)
+    timed_entries = _cues_to_timed_entries(cues, min_cue_duration, remove_punctuation)
 
     srt_blocks: list[str] = []
     for start, end, text in timed_entries:
@@ -502,7 +531,7 @@ def _build_parser() -> argparse.ArgumentParser:
                   --model ivrit-ai/whisper-large-v3-turbo-ct2 \\
                   --model-dir D:/models --device cpu \\
                   --max-chars-per-line 42 --max-lines-per-subtitle 2 \\
-                  --gap 0.6 --min-duration 0.4
+                  --gap 0.6 --min-duration 0.4 --remove-punctuation
             """
         ),
     )
@@ -532,6 +561,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-duration", type=float, default=0.4, metavar="SEC",
                         help="Minimum on-screen duration for any single subtitle "
                              "cue, in seconds (default: 0.4).")
+    # הוספת הפרמטר ל-CLI
+    parser.add_argument("--remove-punctuation", action="store_true",
+                        help="Remove punctuation from subtitles (e.g. periods, commas, question marks).")
     return parser
 
 
@@ -550,6 +582,7 @@ def main() -> None:
         max_lines_per_subtitle=args.max_lines_per_subtitle,
         cue_gap_sec=args.gap,
         min_cue_duration=args.min_duration,
+        remove_punctuation=args.remove_punctuation, # העברת הפרמטר
     )
 
 
