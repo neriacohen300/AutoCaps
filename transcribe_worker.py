@@ -72,7 +72,7 @@ from pathlib import Path
 # Change CUDA_DIR to match your installation.
 # Set to None to skip (relies on system PATH instead).
 # ──────────────────────────────────────────────────────────────────────────────
-CUDA_DIR = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2"  # <── EDIT ME
+CUDA_DIR = r"C:\Users\PC\Documents\----Programing----\AutoCaps\cuda-pack"  # <── EDIT ME
 
 
 def _configure_cuda(cuda_dir: str | None) -> None:
@@ -183,6 +183,162 @@ def _wrap_text(text: str, max_words: int | None, max_chars: int | None) -> list[
     return word_lines
 
 
+def _chunk_lines(lines: list[str], max_lines: int | None) -> list[list[str]]:
+    """
+    Group display lines into chunks of at most max_lines lines each.
+    Each chunk becomes its own SRT block. If max_lines is None, all
+    lines stay together in a single chunk (original behavior).
+    """
+    if not max_lines or max_lines <= 0:
+        return [lines]
+    return [lines[i : i + max_lines] for i in range(0, len(lines), max_lines)] or [lines]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Word-level cue grouping
+#
+# Instead of dumping each whisper *segment* straight into one subtitle block,
+# we flatten every segment down to its individual timestamped words and then
+# regroup those words into short "cues". A cue ends whenever we hit a word
+# cap, a noticeable pause, sentence-ending punctuation, or the boundary of
+# the original whisper segment — whichever comes first. This produces
+# tighter, more natural-feeling subtitles than one block per raw segment.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_SENTENCE_END_CHARS = set(".?!:;׃…")  # includes Hebrew sof-pasuq (׃) and ellipsis
+
+
+def _flatten_words(segment) -> list[dict]:
+    """
+    Pull per-word timestamps out of a faster-whisper segment. Falls back to
+    treating the whole segment as a single "word" if word timestamps weren't
+    produced (e.g. word_timestamps was off for this run).
+    """
+    words_out: list[dict] = []
+    seg_words = getattr(segment, "words", None) or []
+    if seg_words:
+        last_idx = len(seg_words) - 1
+        for i, w in enumerate(seg_words):
+            text = (w.word or "").strip()
+            if not text:
+                continue
+            words_out.append({
+                "text": text,
+                "start": w.start,
+                "end": w.end,
+                "segment_boundary": i == last_idx,
+            })
+    else:
+        text = segment.text.strip()
+        if text:
+            words_out.append({
+                "text": text,
+                "start": segment.start,
+                "end": segment.end,
+                "segment_boundary": True,
+            })
+    return words_out
+
+
+def _group_words_into_cues(
+    words: list[dict],
+    max_words_per_cue: int | None,
+    silence_gap_sec: float,
+) -> list[list[dict]]:
+    """
+    Greedily walk the flattened word stream and split it into cues. A new
+    cue boundary is drawn as soon as one of these is true for the current
+    word:
+      - the cue already reached max_words_per_cue (if a cap was given)
+      - the current word ends a sentence
+      - the current word is the last word of its whisper segment
+      - the pause before the *next* word exceeds silence_gap_sec
+    """
+    cues: list[list[dict]] = []
+    current: list[dict] = []
+    n = len(words)
+
+    for i, word in enumerate(words):
+        current.append(word)
+
+        boundary = bool(max_words_per_cue) and len(current) >= max_words_per_cue
+        if not boundary and word["segment_boundary"]:
+            boundary = True
+        if not boundary and word["text"] and word["text"][-1] in _SENTENCE_END_CHARS:
+            boundary = True
+        if not boundary and i + 1 < n:
+            nxt = words[i + 1]
+            if word["end"] is not None and nxt["start"] is not None:
+                if nxt["start"] - word["end"] > silence_gap_sec:
+                    boundary = True
+
+        if boundary:
+            cues.append(current)
+            current = []
+
+    if current:
+        cues.append(current)
+    return cues
+
+
+def _cues_to_timed_entries(cues: list[list[dict]], min_display_sec: float) -> list[tuple[float, float, str]]:
+    """
+    Turn word cues into (start, end, text) triples, enforcing a minimum
+    on-screen duration and preventing any overlap with the previous entry.
+    """
+    entries: list[tuple[float, float, str]] = []
+    last_end = 0.0
+    for cue in cues:
+        text = " ".join(w["text"] for w in cue).strip()
+        if not text:
+            continue
+        start = cue[0]["start"] if cue[0]["start"] is not None else last_end
+        end = cue[-1]["end"] if cue[-1]["end"] is not None else start
+        start = max(start, last_end)
+        if end < start + min_display_sec:
+            end = start + min_display_sec
+        entries.append((start, end, text))
+        last_end = end
+    return entries
+
+
+def _entry_to_srt_blocks(
+    start: float,
+    end: float,
+    text: str,
+    max_chars_per_line: int | None,
+    max_lines_per_subtitle: int | None,
+) -> list[str]:
+    """
+    Render one (start, end, text) entry into one or more SRT block bodies
+    ("HH:MM:SS,mmm --> HH:MM:SS,mmm\\ntext..."), without the leading index
+    number (that's assigned once, globally, at write time).
+    """
+    lines = _wrap_text(text, None, max_chars_per_line)
+    line_chunks = _chunk_lines(lines, max_lines_per_subtitle)
+
+    if len(line_chunks) == 1:
+        block_text = "\n".join(line_chunks[0])
+        return [f"{_format_timestamp(start)} --> {_format_timestamp(end)}\n{block_text}"]
+
+    # Split the entry's time range across chunks, proportional to each
+    # chunk's character count, so multi-block cues still roughly track
+    # the speech timing.
+    chunk_char_counts = [max(sum(len(l) for l in c), 1) for c in line_chunks]
+    total_chars = sum(chunk_char_counts)
+    duration = max(end - start, 0.0)
+
+    blocks = []
+    cursor = start
+    for i, (chunk, char_count) in enumerate(zip(line_chunks, chunk_char_counts)):
+        is_last = i == len(line_chunks) - 1
+        chunk_end = end if is_last else cursor + duration * (char_count / total_chars)
+        block_text = "\n".join(chunk)
+        blocks.append(f"{_format_timestamp(cursor)} --> {_format_timestamp(chunk_end)}\n{block_text}")
+        cursor = chunk_end
+    return blocks
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core transcription
 # ──────────────────────────────────────────────────────────────────────────────
@@ -196,6 +352,9 @@ def transcribe(
     device: str,
     max_words_per_line: int | None,
     max_chars_per_line: int | None,
+    max_lines_per_subtitle: int | None,
+    cue_gap_sec: float,
+    min_cue_duration: float,
 ) -> None:
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -239,14 +398,15 @@ def transcribe(
         beam_size=5,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
+        word_timestamps=True,
     )
     _log(
         f"Detected language: {info.language} "
         f"(prob={info.language_probability:.2f})"
     )
 
-    # ── Consume segments, emit progress, build SRT ────────────────────────────
-    srt_blocks: list[str] = []
+    # ── Consume segments, emit progress, collect words ────────────────────────
+    word_stream: list[dict] = []
     segment_index = 0
     t_start = time.monotonic()
 
@@ -277,27 +437,32 @@ def transcribe(
             "eta_sec":      round(eta_sec, 1) if eta_sec is not None else None,
         })
 
-        # Build SRT block
-        lines = _wrap_text(segment.text, max_words_per_line, max_chars_per_line)
-        start_ts = _format_timestamp(segment.start)
-        end_ts   = _format_timestamp(segment.end)
-        block_text = "\n".join(lines)
-        srt_blocks.append(f"{segment_index}\n{start_ts} --> {end_ts}\n{block_text}")
+        word_stream.extend(_flatten_words(segment))
+
+    # ── Regroup words into short cues, then render SRT blocks ─────────────────
+    cues = _group_words_into_cues(word_stream, max_words_per_line, cue_gap_sec)
+    timed_entries = _cues_to_timed_entries(cues, min_cue_duration)
+
+    srt_blocks: list[str] = []
+    for start, end, text in timed_entries:
+        srt_blocks.extend(_entry_to_srt_blocks(start, end, text, max_chars_per_line, max_lines_per_subtitle))
 
     # ── Write SRT ─────────────────────────────────────────────────────────────
+    numbered_blocks = [f"{i}\n{block}" for i, block in enumerate(srt_blocks, start=1)]
     out_path = Path(srt_out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    srt_content = "\n\n".join(srt_blocks) + "\n"
+    srt_content = "\n\n".join(numbered_blocks) + "\n"
     out_path.write_text(srt_content, encoding="utf-8")
 
     elapsed_total = round(time.monotonic() - t_start, 1)
+    subtitle_count = len(numbered_blocks)
     _emit({
         "event":          "done",
-        "subtitle_count": segment_index,
+        "subtitle_count": subtitle_count,
         "elapsed_sec":    elapsed_total,
         "srt_path":       str(out_path.resolve()),
     })
-    _log(f"Done — {segment_index} subtitles in {elapsed_total}s → {out_path}")
+    _log(f"Done — {subtitle_count} subtitles in {elapsed_total}s → {out_path}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -336,7 +501,8 @@ def _build_parser() -> argparse.ArgumentParser:
               transcribe_worker audio.wav out/subs.srt \\
                   --model ivrit-ai/whisper-large-v3-turbo-ct2 \\
                   --model-dir D:/models --device cpu \\
-                  --max-chars-per-line 42
+                  --max-chars-per-line 42 --max-lines-per-subtitle 2 \\
+                  --gap 0.6 --min-duration 0.4
             """
         ),
     )
@@ -351,9 +517,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device",      choices=["cuda", "cpu"], default="cuda",
                         help="Compute device (default: cuda).")
     parser.add_argument("--max-words-per-line", type=int, default=None, metavar="N",
-                        help="Max words per SRT display line.")
+                        help="Max words per subtitle cue. Cues also break early on "
+                             "sentence-ending punctuation, pauses longer than --gap, "
+                             "or the end of a whisper segment.")
     parser.add_argument("--max-chars-per-line", type=int, default=None, metavar="N",
                         help="Max characters per SRT display line.")
+    parser.add_argument("--max-lines-per-subtitle", type=int, default=None, metavar="N",
+                        help="Max display lines per subtitle block. If a cue's wrapped "
+                             "text exceeds this, it is split into multiple consecutive "
+                             "subtitle blocks with proportionally split timing.")
+    parser.add_argument("--gap",         type=float, default=0.6, metavar="SEC",
+                        help="Pause (in seconds) between words that forces a new "
+                             "subtitle cue to start (default: 0.6).")
+    parser.add_argument("--min-duration", type=float, default=0.4, metavar="SEC",
+                        help="Minimum on-screen duration for any single subtitle "
+                             "cue, in seconds (default: 0.4).")
     return parser
 
 
@@ -369,6 +547,9 @@ def main() -> None:
         device=args.device,
         max_words_per_line=args.max_words_per_line,
         max_chars_per_line=args.max_chars_per_line,
+        max_lines_per_subtitle=args.max_lines_per_subtitle,
+        cue_gap_sec=args.gap,
+        min_cue_duration=args.min_duration,
     )
 
 
