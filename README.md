@@ -39,7 +39,7 @@ backend/
 │   ├── index.html # ממשק המשתמש (UI) של התוסף
 ├── resolve/
 │       ├── AutoCaps.lua # קובץ התוסף לDavinci Resolve
-
+```
 
 ## 🚀 הוראות התקנה
 
