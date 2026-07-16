@@ -5,7 +5,7 @@ const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppDat
 
 const Config = {
     // Path to the compiled exe (adjust this to where your EXE actually lives)
-    exePath: path.join(__dirname, "backend", "transcription_engine.exe"),
+    exePath: path.join(localAppData, "AutoCaps", "backend", "transcription_engine.exe"),
     
     // Directory where models are stored
     modelDir: path.join(localAppData, "AutoCaps", "models"),

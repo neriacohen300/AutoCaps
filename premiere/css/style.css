@@ -1,0 +1,256 @@
+/* הגדרות כלליות ומערכת צבעים של Adobe Premiere Pro */
+:root {
+    --bg-main: #181818;          /* רקע כהה לפאנל */
+    --bg-section: #232323;       /* רקע לתיבות ההגדרות */
+    --bg-input: #1D1D1D;         /* רקע של תיבות קלט ודרופדאונים */
+    --border-color: #323232;     /* צבע גבולות עדין */
+    --text-primary: #E2E2E2;     /* טקסט ראשי בהיר */
+    --text-secondary: #959595;   /* טקסט משני/אפור */
+    --accent-blue: #1473E6;      /* כחול אדובי */
+    --accent-blue-hover: #0d5cb8;/* כחול כהה יותר למעבר עכבר */
+    --accent-disabled: #3A3A3A;  /* צבע כפתור נעול */
+    --focus-outline: #2680EB;    /* גבול לפוקוס */
+}
+
+/* אתחול ועיצוב גוף הפאנל */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Tahoma, Geneva, sans-serif;
+    font-size: 12px;
+    padding: 12px;
+    line-height: 1.4;
+    user-select: none; /* מניעת בחירת טקסט בתוך הפאנל של פרמייר */
+}
+
+/* מיכל ראשי */
+.container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* עיצוב כותרת הפאנל */
+.header {
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 8px;
+}
+
+.header h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #FFF;
+    letter-spacing: 0.5px;
+}
+
+.header .subtitle {
+    font-size: 10px;
+    color: var(--text-secondary);
+    display: block;
+    margin-top: 2px;
+}
+
+/* תיבות קבוצות (Cards) */
+.section {
+    background-color: var(--bg-section);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.section-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+}
+
+/* עיצוב שדות קלט (שורה אחת) */
+.field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* שורה של שני שדות זה לצד זה */
+.field-row {
+    display: flex;
+    gap: 10px;
+}
+
+.field-row .field-group {
+    flex: 1;
+}
+
+/* תוויות הגדרה */
+label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+/* עיצוב תיבות בחירה וקלט מספרי */
+select, input[type="number"] {
+    background-color: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 11px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    width: 100%;
+}
+
+select:hover, input[type="number"]:hover {
+    border-color: #4A4A4A;
+}
+
+select:focus, input[type="number"]:focus {
+    border-color: var(--focus-outline);
+    box-shadow: 0 0 0 1px var(--focus-outline);
+}
+
+/* התאמה מיוחדת לדרופדאון */
+select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23959595' d='M0 0l5 5 5-5z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: left 8px center;
+    padding-left: 24px; /* רווח לחץ השמאלי */
+}
+
+/* תיבת סימון (Checkbox) מעוצבת ומקצועית */
+.checkbox-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 8px 10px;
+    background-color: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin-top: 4px;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+
+.checkbox-wrapper:hover {
+    background-color: #282828;
+    border-color: #444;
+}
+
+/* הסתרת ה-Checkbox המובנה של הדפדפן */
+.checkbox-wrapper input[type="checkbox"] {
+    display: none;
+}
+
+/* עיצוב הריבוע המדמה Checkbox */
+.checkbox-wrapper .custom-checkbox {
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--text-secondary);
+    border-radius: 3px;
+    background-color: var(--bg-main);
+    display: inline-block;
+    position: relative;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+
+/* סימון ה-V בתוך התיבה כאשר היא מסומנת */
+.checkbox-wrapper input[type="checkbox"]:checked + .custom-checkbox {
+    background-color: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+
+.checkbox-wrapper input[type="checkbox"]:checked + .custom-checkbox::after {
+    content: "";
+    position: absolute;
+    left: 4.5px;
+    top: 1.5px;
+    width: 3px;
+    height: 7px;
+    border: solid white;
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
+}
+
+.checkbox-wrapper .checkbox-text {
+    font-size: 11px;
+    color: var(--text-primary);
+}
+
+/* כפתור הפעולה הראשי */
+.action-zone {
+    margin-top: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+button {
+    background-color: var(--accent-blue);
+    color: #FFFFFF;
+    border: none;
+    border-radius: 4px;
+    padding: 10px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s, transform 0.05s;
+    width: 100%;
+}
+
+button:hover {
+    background-color: var(--accent-blue-hover);
+}
+
+button:active {
+    transform: scale(0.98);
+}
+
+button:disabled {
+    background-color: var(--accent-disabled);
+    color: var(--text-secondary);
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* אזור הסטטוס */
+#status {
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-align: center;
+    padding: 6px;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px dashed rgba(255, 255, 255, 0.05);
+}
+
+/* תומך בעיצוב יפה של גלילת הפאנל במידה והוא קטן מאוד */
+::-webkit-scrollbar {
+    width: 6px;
+}
+::-webkit-scrollbar-track {
+    background: var(--bg-main);
+}
+::-webkit-scrollbar-thumb {
+    background: #3E3E3E;
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #4E4E4E;
+}
