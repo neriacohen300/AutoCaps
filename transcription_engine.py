@@ -69,11 +69,10 @@ from pathlib import Path
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CUDA PATH CONFIGURATION
-# Change CUDA_DIR to match your installation.
-# Set to None to skip (relies on system PATH instead).
+# Pulls the CUDA directory dynamically from the environment variable 
+# sent by the Premiere Pro extension.
 # ──────────────────────────────────────────────────────────────────────────────
-CUDA_DIR = r"C:\Users\PC\Documents\----Programing----\AutoCaps\cuda-pack"  # <── EDIT ME
-
+CUDA_DIR = os.environ.get("CUDA_DIR", None)
 
 def _configure_cuda(cuda_dir: str | None) -> None:
     """Prepend CUDA bin/lib paths so CuBLAS/CuDNN are discoverable."""
@@ -109,7 +108,8 @@ def _log(message: str, level: str = "INFO") -> None:
 
 def _emit(event: dict) -> None:
     """Write a JSON progress event to stdout (one line = one event)."""
-    print(json.dumps(event, ensure_ascii=False), flush=True)
+    sys.stdout.buffer.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def _get_audio_duration(audio_path: Path) -> float | None:

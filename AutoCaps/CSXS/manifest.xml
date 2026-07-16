@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="11.0" ExtensionBundleId="com.autocaps.panel" ExtensionBundleVersion="1.0.0" ExtensionBundleName="AutoCaps" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <ExtensionList>
+        <Extension Id="com.autocaps.panel" Version="1.0.0" />
+    </ExtensionList>
+    <ExecutionEnvironment>
+        <HostList>
+            <Host Name="PPRO" Version="15.0" />
+        </HostList>
+        <LocaleList>
+            <Locale Code="All" />
+        </LocaleList>
+        <RequiredRuntimeList>
+            <RequiredRuntime Name="CSXS" Version="11.0" />
+        </RequiredRuntimeList>
+    </ExecutionEnvironment>
+    <DispatchInfoList>
+        <Extension Id="com.autocaps.panel">
+            <DispatchInfo >
+                <Resources>
+                    <MainPath>./index.html</MainPath>
+                    <ScriptPath>./jsx/main.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <Parameter>--enable-nodejs</Parameter>
+                        <Parameter>--mixed-context</Parameter>
+                    </CEFCommandLine>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>AutoCaps (כתוביות בעברית)</Menu>
+                    <Geometry>
+                        <Size>
+                            <Height>500</Height>
+                            <Width>350</Width>
+                        </Size>
+                    </Geometry>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+    </DispatchInfoList>
+</ExtensionManifest>

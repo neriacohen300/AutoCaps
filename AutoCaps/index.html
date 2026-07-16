@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+    <meta charset="utf-8">
+    <title>AutoCaps</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <h2>AutoCaps</h2>
+        
+        <label>שפה:</label>
+        <select id="language">
+            <option value="he">עברית</option>
+            <option value="en">אנגלית</option>
+        </select>
+
+        <label>טווח טיימליין:</label>
+        <select id="timelineRange">
+            <option value="entire">כל הטיימליין</option>
+            <option value="inOut">In/Out בלבד</option>
+        </select>
+
+        <label>מילים בשורה (מקסימום):</label>
+        <input type="number" id="maxWords" value="8" min="1">
+
+        <label>שורות בכתובית (מקסימום):</label>
+        <input type="number" id="maxLines" value="2" min="1">
+
+        <label>עיבוד (GPU/CPU):</label>
+        <select id="deviceSelect">
+            <option value="cuda">GPU (CUDA)</option>
+            <option value="cpu">CPU</option>
+        </select>
+
+        <button id="btnExport">יצירת כתוביות</button>
+        <div id="status">מוכן...</div>
+    </div>
+
+    <script src="js/CSInterface.js"></script>
+    <script src="js/config.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
