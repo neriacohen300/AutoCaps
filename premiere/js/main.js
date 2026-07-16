@@ -130,14 +130,19 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
         log("SRT exists: " + fs.existsSync(srtPath));
         
         if (code === 0 && fs.existsSync(srtPath)) {
-            statusDiv.innerText = "התמלול הסתיים, מייבא לפרמייר...";
-            // העברת ה-range לפונקציית הייבוא ב-ExtendScript
-            const importScript = `importAndPlaceSRT("${srtPath.replace(/\\/g, '\\\\')}", "${range}")`;
-            csInterface.evalScript(importScript, (importResult) => {
-                log("Import result: " + importResult);
-                statusDiv.innerText = "התהליך הושלם בהצלחה!";
-                btnExport.disabled = false;
-            });
+            statusDiv.innerText = "התמלול הסתיים! טוען עורך...";
+            
+            // קריאת קובץ ה-SRT
+            const srtContent = fs.readFileSync(srtPath, 'utf8');
+            parsedSubtitles = parseSRT(srtContent); // שמירה במשתנה גלובלי
+            currentSrtPath = srtPath;
+            currentRange = range;
+            
+            // הצגת הממשק
+            renderBulkEditor(parsedSubtitles);
+            document.getElementById('bulkEditorContainer').style.display = "block";
+            btnExport.disabled = false;
+            statusDiv.innerText = "ניתן לערוך את הכתוביות למטה.";
         } else {
             statusDiv.innerText = "שגיאה בתמלול.";
             btnExport.disabled = false;
@@ -254,5 +259,75 @@ btnCutSilence.addEventListener('click', () => {
             statusSilence.innerText = "שגיאה בתהליך: " + err.message;
             btnCutSilence.disabled = false;
         }
+    });
+});
+
+
+
+let parsedSubtitles = [];
+let currentSrtPath = "";
+let currentRange = "";
+
+// 1. פונקציה שהופכת SRT למערך
+function parseSRT(srtText) {
+    const blocks = srtText.trim().replace(/\r\n/g, '\n').split('\n\n');
+    return blocks.map(block => {
+        const lines = block.split('\n');
+        return {
+            id: lines[0],
+            time: lines[1],
+            text: lines.slice(2).join('\n')
+        };
+    });
+}
+
+// 2. פונקציה שהופכת מערך חזרה ל-SRT
+function stringifySRT(subsArray) {
+    return subsArray.map(sub => `${sub.id}\n${sub.time}\n${sub.text}`).join('\n\n') + '\n';
+}
+
+// 3. הצגת הכתוביות בעורך ה-HTML
+function renderBulkEditor(subsArray) {
+    const listDiv = document.getElementById('subtitlesList');
+    listDiv.innerHTML = ''; // ניקוי
+
+    subsArray.forEach((sub, index) => {
+        const row = document.createElement('div');
+        row.style = "display: flex; gap: 10px; align-items: flex-start;";
+
+        const timeLabel = document.createElement('span');
+        timeLabel.innerText = sub.id; // או להציג זמנים, מה שיותר נוח לך
+        timeLabel.style = "font-size: 10px; color: var(--text-secondary); width: 25px; margin-top: 5px;";
+
+        const input = document.createElement('textarea');
+        input.value = sub.text;
+        input.rows = 2;
+        input.style = "flex: 1; background: var(--bg-main); color: var(--text-primary); border: 1px solid var(--border-color); padding: 5px; border-radius: 4px; resize: none;";
+        
+        // עדכון המערך בזמן אמת בעת הקלדה
+        input.addEventListener('input', (e) => {
+            parsedSubtitles[index].text = e.target.value;
+        });
+
+        row.appendChild(timeLabel);
+        row.appendChild(input);
+        listDiv.appendChild(row);
+    });
+}
+
+// 4. מאזין ללחיצה על שמירה וייבוא
+document.getElementById('btnSaveSubtitles').addEventListener('click', () => {
+    const statusDiv = document.getElementById('status');
+    statusDiv.innerText = "שומר וייבא לפרמייר...";
+    
+    // יצירת SRT חדש
+    const newSrtContent = stringifySRT(parsedSubtitles);
+    fs.writeFileSync(currentSrtPath, newSrtContent, 'utf8');
+
+    // ייבוא דרך ExtendScript בדיוק כמו מקודם
+    const importScript = `importAndPlaceSRT("${currentSrtPath.replace(/\\/g, '\\\\')}", "${currentRange}")`;
+    csInterface.evalScript(importScript, (importResult) => {
+        statusDiv.innerText = "התהליך הושלם בהצלחה!";
+        document.getElementById('bulkEditorContainer').style.display = "none";
     });
 });
