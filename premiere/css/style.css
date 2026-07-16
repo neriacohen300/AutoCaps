@@ -254,3 +254,60 @@ button:disabled {
 ::-webkit-scrollbar-thumb:hover {
     background: #4E4E4E;
 }
+
+/* =========================================
+   Collapsible Segments (Accordions)
+   ========================================= */
+
+.collapsible-group {
+    background-color: transparent;
+    border-top: 1px solid var(--border-color);
+    margin-top: 4px;
+}
+
+/* Hide the default HTML marker */
+.collapsible-header::-webkit-details-marker {
+    display: none;
+}
+
+.collapsible-header {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 4px;
+    cursor: pointer;
+    list-style: none; /* Removes default arrow in modern browsers */
+    display: flex;
+    align-items: center;
+    user-select: none;
+    transition: color 0.15s ease;
+}
+
+.collapsible-header:hover {
+    color: #FFFFFF;
+}
+
+/* Custom animated arrow tailored for RTL */
+.collapsible-header::before {
+    content: "◀";
+    font-size: 9px;
+    color: var(--text-secondary);
+    display: inline-block;
+    margin-left: 8px; /* Spacing between arrow and text */
+    transition: transform 0.2s ease;
+}
+
+/* Rotate arrow downwards when the segment is open */
+details[open] > .collapsible-header::before {
+    transform: rotate(-90deg);
+}
+
+/* The wrapper inside the collapsible segment */
+.collapsible-body {
+    padding: 8px 0 12px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.05); /* Subtle separation */
+}

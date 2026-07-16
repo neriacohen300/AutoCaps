@@ -39,13 +39,15 @@ btnExport.addEventListener('click', async () => {
     const maxWords = document.getElementById('maxWords').value;
     const maxLines = document.getElementById('maxLines').value;
     const device = document.getElementById('deviceSelect').value;
+    const btnCutSilence = document.getElementById('btnCutSilence');
+    const statusSilence = document.getElementById('statusSilence');
     // קריאת המצב של תיבת הסימון החדשה
     const removePunctuation = document.getElementById('removePunctuation').checked;
 
     const audioOutPath = path.join(Config.tempDir, `autocaps_audio_${Date.now()}.wav`);
     const srtOutPath = path.join(Config.tempDir, `autocaps_subs_${Date.now()}.srt`);
 
-    const presetPath = csInterface.getSystemPath(SystemPath.EXTENSION) + "/audio_preset.epr";
+    const presetPath = Config.presetPath;
     
     log("audioOutPath: " + audioOutPath);
     log("presetPath: " + presetPath);
@@ -142,3 +144,115 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
         }
     });
 }
+
+
+// פונקציה להרצת FFmpeg ואיתור השקט
+function detectSilence(wavPath, outJsonPath, threshold, durationMs, padMs) {
+    return new Promise((resolve, reject) => {
+        const durationSec = durationMs / 1000.0;
+        
+        const args = [
+            "-i", wavPath,
+            "-af", `silencedetect=noise=${threshold}dB:d=${durationSec}`,
+            "-f", "null", "-"
+        ];
+        
+        const child = spawn(Config.ffmpegPath, args, { windowsHide: true });
+        
+        let output = "";
+        child.stderr.on("data", data => output += data.toString());
+        
+        child.on("error", e => reject(new Error("הפעלת FFmpeg נכשלה: " + e.message)));
+        
+        child.on("close", code => {
+            if (code !== 0) {
+                return reject(new Error("FFmpeg נכשל (קוד " + code + ")"));
+            }
+            
+            const results = [];
+            const lines = output.split('\n');
+            let currentStart = null;
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const startMatch = line.match(/silence_start:\s+([\d\.]+)/);
+                if (startMatch) currentStart = parseFloat(startMatch[1]);
+                
+                const endMatch = line.match(/silence_end:\s+([\d\.]+)/);
+                if (endMatch && currentStart !== null) {
+                    const end = parseFloat(endMatch[1]);
+                    const padSec = padMs / 1000.0;
+                    
+                    const adjStart = currentStart + padSec;
+                    const adjEnd = end - padSec;
+                    
+                    if (adjEnd > adjStart) {
+                        results.push({ start: adjStart, end: adjEnd, isSilence: true });
+                    }
+                    currentStart = null;
+                }
+            }
+            
+            try {
+                fs.writeFileSync(outJsonPath, JSON.stringify(results, null, 2), "utf8");
+                resolve(results);
+            } catch (err) {
+                reject(new Error("שגיאה בשמירת קובץ ה-JSON: " + err.message));
+            }
+        });
+    });
+}
+
+// מאזין ללחיצה על כפתור חיתוך שקט
+btnCutSilence.addEventListener('click', () => {
+    btnCutSilence.disabled = true;
+    statusSilence.innerText = "מייצא אודיו לבדיקה...";
+    
+    // נייצר קובץ אודיו ייעודי בתיקיית ה-Temp
+    const wavPath = path.join(Config.tempDir, `silence_scan_${Date.now()}.wav`);
+    
+    // אנו נשתמש בפונקציה הקיימת ב-JSX לייצוא (חובה קובץ Preset)
+    // שים לב ש-exportAudioForTranscription כבר קיימת אצלך בקוד (כמו שרואים מה-metadata של הקובץ)
+    const exportScript = `exportAudioForTranscription("${wavPath.replace(/\\/g, '\\\\')}", "entire", "${Config.presetPath.replace(/\\/g, '\\\\')}")`;
+    
+    csInterface.evalScript(exportScript, async (exportRes) => {
+        if (exportRes !== "SUCCESS") {
+            statusSilence.innerText = "שגיאה בייצוא האודיו: " + exportRes;
+            btnCutSilence.disabled = false;
+            return;
+        }
+
+        statusSilence.innerText = "מנתח גלי קול (מאתר שקט)...";
+        try {
+            const threshold = parseFloat(document.getElementById('silThreshold').value);
+            const duration = parseFloat(document.getElementById('silDuration').value);
+            const pad = parseFloat(document.getElementById('silPad').value);
+            const jsonPath = path.join(Config.tempDir, `silence_${Date.now()}.json`);
+            
+            const segments = await detectSilence(wavPath, jsonPath, threshold, duration, pad);
+            const intervalsJson = JSON.stringify(segments);
+            
+            statusSilence.innerText = "מבצע חיתוכים ומנקה שאריות...";
+            
+            const cutScript = `cutSilence('${intervalsJson}')`;
+            csInterface.evalScript(cutScript, (cutResultRaw) => {
+                let cutResult;
+                try {
+                    cutResult = JSON.parse(cutResultRaw);
+                } catch (e) {
+                    cutResult = { ok: false, error: cutResultRaw };
+                }
+                
+                if (cutResult && cutResult.ok) {
+                    statusSilence.innerText = "הושלם";
+                } else {
+                    statusSilence.innerText = "שגיאה: " + (cutResult.error || cutResult.message);
+                }
+                btnCutSilence.disabled = false;
+            });
+        } catch(err) {
+            statusSilence.innerText = "שגיאה בתהליך: " + err.message;
+            btnCutSilence.disabled = false;
+        }
+    });
+});
