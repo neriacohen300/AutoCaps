@@ -132,12 +132,12 @@ end
 
 local function importSrtToTimeline(srtPath)
     local timeline = project:GetCurrentTimeline()
-    if not timeline then return false end
+    if not timeline then return false, "אין טיים-ליין פעיל" end
 
     local mediaPool = project:GetMediaPool()
     local rootBin   = mediaPool:GetRootFolder()
 
-    -- חיפוש או יצירת תיקיית AutoCaps ב-Media Pool
+    -- חיפוש או יצירת תיקיית AutoCaps ב-Media Pool כדי לשמור על סדר
     local autoCapsBin = nil
     for _, sf in ipairs(rootBin:GetSubFolderList() or {}) do
         if sf:GetName() == "AutoCaps" then autoCapsBin = sf; break end
@@ -147,29 +147,45 @@ local function importSrtToTimeline(srtPath)
     end
     mediaPool:SetCurrentFolder(autoCapsBin)
 
-    -- ייבוא ה-SRT
-    local clips = mediaPool:ImportMedia({srtPath})
-    if not clips or #clips == 0 then return false end
+    -- שימוש ב-pcall לטיפול בטוח בשגיאות במהלך הייבוא וההשמה
+    local okPlace, placeErr = pcall(function()
+        local clips = mediaPool:ImportMedia({srtPath})
+        if not clips or #clips == 0 then error("הייבוא ל-Media Pool נכשל") end
 
-    -- הכנסה ישירה לטיימליין לערוץ Subtitles
-    local appendOk = mediaPool:AppendToTimeline({{
-        mediaPoolItem = clips[1],
-        startFrame    = 0,
-        endFrame      = clips[1]:GetClipProperty("End Frame"),
-        recordType    = "subtitle",
-    }})
+        -- בדיקה אם יש ערוץ כתוביות ריק
+        local n = timeline:GetTrackCount("subtitle") or 0
+        local hasEmpty = false
+        for i = 1, n do
+            local items = timeline:GetItemListInTrack("subtitle", i)
+            if not items or #items == 0 then 
+                hasEmpty = true 
+                break 
+            end
+        end
+        
+        -- אם אין ערוץ ריק, נוסיף אחד חדש
+        if not hasEmpty then 
+            timeline:AddTrack("subtitle") 
+        end
+
+        -- הוספה ישירה לטיימליין
+        local placed = mediaPool:AppendToTimeline({ clips[1] })
+        if not placed or #placed == 0 then error("ההוספה לטיימליין נכשלה (AppendToTimeline)") end
+    end)
     
-    if appendOk then return true end
+    if not okPlace then
+        -- במקרה של שגיאה נחזיר false ואת הודעת השגיאה
+        return false, tostring(placeErr)
+    end
 
-    -- פולבק
-    return timeline:ImportIntoTimeline(srtPath, {})
+    return true, "הכתוביות נוספו לסיקוונס"
 end
 
 -- ==========================================
--- עיצוב ממשק המשתמש (דמוי Premiere Pro - מונע חיתוכים!)
+-- עיצוב ממשק המשתמש (מותאם לעברית - בלי דחיפה החוצה)
 -- ==========================================
 
-local width, height = 450, 650 -- גובה מותאם המונע גלילה וחיתוך
+local width, height = 600, 770
 local win = disp:AddWindow({
     ID = "AutoCapsWin",
     WindowTitle = "AutoCaps - Subtitles",
@@ -177,83 +193,114 @@ local win = disp:AddWindow({
     
     ui:VGroup {
         ID = "RootGroup",
-        Spacing = 12, -- מרווח מבוקר בין הבלוקים הראשיים
-        Margin = 15,
+        Spacing = 10,
+        Margin = 20,
 
-        -- כותרת הראשית
+        -- כותרת ראשית 
         ui:VGroup {
-            Spacing = 2,
+            Weight = 0,
             ui:Label { 
                 Text = "AutoCaps", 
-                Font = ui:Font { PixelSize = 22, Bold = true },
-                Alignment = { AlignHCenter = true }
+                Font = ui:Font { PixelSize = 24, Bold = true },
+                Alignment = { AlignHCenter = true },
+                Weight = 0
             },
             ui:Label { 
                 Text = "מערכת תמלול וכתוביות מתקדמת", 
-                Font = ui:Font { PixelSize = 11 },
-                Alignment = { AlignHCenter = true }
+                Font = ui:Font { PixelSize = 12, Italic = true },
+                Alignment = { AlignHCenter = true },
+                Weight = 0
             }
         },
+
+        ui:VGap(5),
+        ui:Label{ Weight = 0, FrameStyle = 4 }, 
+        ui:VGap(5),
 
         -- בלוק 1: הגדרות פרויקט
+        ui:Label { Text = "הגדרות פרויקט", Font = ui:Font { PixelSize = 14, Bold = true }, Weight = 0, Alignment = { AlignRight = true } },
         ui:VGroup {
-            Spacing = 6,
-            ui:Label { Text = "הגדרות פרויקט:", Font = ui:Font { Bold = true } },
+            Weight = 0, Spacing = 8, Margin = 0,
             ui:HGroup {
-                ui:Label { Text = "שפת התמלול:", Weight = 0.4 },
-                ui:ComboBox { ID = "ComboLang", Weight = 0.6 }
+                Weight = 0,
+                ui:ComboBox { ID = "ComboLang", Weight = 0.7 },
+                ui:Label { Text = ":שפת התמלול", Weight = 0.3, Alignment = { AlignRight = true } }
             },
             ui:HGroup {
-                ui:Label { Text = "טווח טיים-ליין:", Weight = 0.4 },
-                ui:ComboBox { ID = "ComboRange", Weight = 0.6 }
+                Weight = 0,
+                ui:ComboBox { ID = "ComboRange", Weight = 0.7 },
+                ui:Label { Text = ":טווח טיים-ליין", Weight = 0.3, Alignment = { AlignRight = true } }
             }
         },
+
+        ui:VGap(5),
+        ui:Label{ Weight = 0, FrameStyle = 4 }, 
+        ui:VGap(5),
 
         -- בלוק 2: הגדרות כתוביות
+        ui:Label { Text = "הגדרות עיצוב טקסט", Font = ui:Font { PixelSize = 14, Bold = true }, Weight = 0, Alignment = { AlignRight = true } },
         ui:VGroup {
-            Spacing = 6,
-            ui:Label { Text = "הגדרות כתוביות:", Font = ui:Font { Bold = true } },
+            Weight = 0, Spacing = 8, Margin = 0,
             ui:HGroup {
-                ui:Label { Text = "מילים בשורה (מקס'):", Weight = 0.6 },
-                ui:SpinBox { ID = "SpinWords", Value = 8, Minimum = 1, Maximum = 15 }
+                Weight = 0,
+                ui:SpinBox { ID = "SpinWords", Value = 8, Minimum = 1, Maximum = 15, Weight = 0.7 },
+                ui:Label { Text = ":(מילים בשורה (מקס", Weight = 0.3, Alignment = { AlignRight = true } }
             },
             ui:HGroup {
-                ui:Label { Text = "שורות בכתובית (מקס'):", Weight = 0.6 },
-                ui:SpinBox { ID = "SpinLines", Value = 2, Minimum = 1, Maximum = 4 }
+                Weight = 0,
+                ui:SpinBox { ID = "SpinLines", Value = 2, Minimum = 1, Maximum = 4, Weight = 0.7 },
+                ui:Label { Text = ":(שורות בכתובית (מקס", Weight = 0.3, Alignment = { AlignRight = true } }
             },
-            ui:CheckBox { ID = "CheckPunctuation", Text = "הסרת סימני פיסוק מהכתוביות (מראה נקי)", Checked = false }
-        },
-
-        -- בלוק 3: חומרה ועיבוד
-        ui:VGroup {
-            Spacing = 6,
-            ui:Label { Text = "חומרה ועיבוד:", Font = ui:Font { Bold = true } },
             ui:HGroup {
-                ui:Label { Text = "מנוע עיבוד:", Weight = 0.4 },
-                ui:ComboBox { ID = "ComboDevice", Weight = 0.6 }
+                Weight = 0,
+                ui:CheckBox { ID = "CheckPunctuation", Text = "", Checked = false, Weight = 0.1 },
+                ui:Label { Text = "הסרת סימני פיסוק מהכתוביות", Weight = 0.9, Alignment = { AlignRight = true } }
             }
         },
 
-        -- בלוק 4: סטטוס וכפתור פעולה (החלק התחתון שנחתך)
+        ui:VGap(5),
+        ui:Label{ Weight = 0, FrameStyle = 4 }, 
+        ui:VGap(5),
+
+        -- בלוק 3: חומרה ועיבוד
+        ui:Label { Text = "מנוע עיבוד", Font = ui:Font { PixelSize = 14, Bold = true }, Weight = 0, Alignment = { AlignRight = true } },
         ui:VGroup {
-            Spacing = 8,
+            Weight = 0, Spacing = 8, Margin = 0,
+            ui:HGroup {
+                Weight = 0,
+                ui:ComboBox { ID = "ComboDevice", Weight = 0.7 },
+                ui:Label { Text = ":מנוע חומרה", Weight = 0.3, Alignment = { AlignRight = true } }
+            }
+        },
+
+        -- החלפנו את החלל הגמיש הבעייתי במרווח קבוע של 15 פיקסלים
+        ui:VGap(15),
+
+        ui:Label{ Weight = 0, FrameStyle = 4 }, 
+        ui:VGap(5),
+
+        -- בלוק 4: אזור הפעולה
+        ui:VGroup {
+            Weight = 0,
+            Spacing = 10,
             ui:Label { 
                 ID = "StatusLbl", 
                 Text = "מוכן לעבודה...", 
                 Alignment = { AlignHCenter = true },
-                Font = ui:Font { PixelSize = 12, Italic = true }
+                Font = ui:Font { PixelSize = 13 },
+                Weight = 0
             },
             ui:Button { 
                 ID = "BtnRun", 
-                Text = "יצירת כתוביות בטיימליין", 
-                MinimumSize = {0, 35},
-                Font = ui:Font { PixelSize = 13, Bold = true }
+                Text = "הפעל AutoCaps", 
+                MinimumSize = {0, 35}, 
+                Font = ui:Font { PixelSize = 14, Bold = true },
+                Weight = 0
             }
         }
     }
 })
 
--- אתחול שדות הבחירה
 local itm = win:GetItems()
 
 itm.ComboLang:AddItem("he")
@@ -366,12 +413,14 @@ win.On.BtnRun.Clicked = function(ev)
     -- 5. ייבוא הכתוביות לטיים-ליין או טיפול בשגיאות מהלוג
     if pathExists(srtOut) then
         itm.StatusLbl.Text = "מייבא כתוביות לטיים-ליין..."
-        local imported = importSrtToTimeline(srtOut)
+        local imported, importMsg = importSrtToTimeline(srtOut)
         
         if imported then
-            itm.StatusLbl.Text = "הושלם! הכתוביות נוספו בהצלחה."
+            itm.StatusLbl.Text = "הושלם! " .. importMsg
         else
-            itm.StatusLbl.Text = "הושלם! גרור את ה-SRT מתיקיית AutoCaps ב-Media Pool."
+            -- הצגת הודעת השגיאה למשתמש יחד עם ההוראה הידנית
+            itm.StatusLbl.Text = "ייבוא אוטומטי נכשל. גרור את ה-SRT ידנית מתיקיית AutoCaps."
+            print("Import Error: " .. (importMsg or ""))
         end
     else
         -- חילוץ שגיאה אמיתית מהלוג אם הקובץ לא נוצר
