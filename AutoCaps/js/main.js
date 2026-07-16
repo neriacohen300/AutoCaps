@@ -12,7 +12,7 @@ statusDiv.parentNode.appendChild(debugDiv);
 
 function log(msg) {
     console.log(msg);
-    debugDiv.innerText += msg + "\n";
+    //debugDiv.innerText += msg + "\n";
 }
 
 function waitForFile(filePath, timeoutMs, onReady, onTimeout) {
@@ -54,29 +54,30 @@ btnExport.addEventListener('click', async () => {
     log("Calling ExtendScript...");
     
     csInterface.evalScript(extendScriptCall, (result) => {
-    log("ExtendScript result: " + result);
-    
-    if (result !== "SUCCESS") {
-        statusDiv.innerText = "שגיאה בייצוא אודיו: " + result;
-        btnExport.disabled = false;
-        return;
-    }
+        log("ExtendScript result: " + result);
+        
+        if (result !== "SUCCESS") {
+            statusDiv.innerText = "שגיאה בייצוא אודיו: " + result;
+            btnExport.disabled = false;
+            return;
+        }
 
-    // המתן לקובץ WAV להיווצר (עד 60 שניות)
-    statusDiv.innerText = "ממתין לייצוא WAV...";
-    waitForFile(audioOutPath, 60000, () => {
-        log("WAV file ready, size: " + fs.statSync(audioOutPath).size);
-        statusDiv.innerText = "מתמלל... (אנא המתן)";
-        runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device);
-    }, () => {
-        log("WAV file never appeared!");
-        statusDiv.innerText = "שגיאה: קובץ WAV לא נוצר";
-        btnExport.disabled = false;
+        // המתן לקובץ WAV להיווצר (עד 60 שניות)
+        statusDiv.innerText = "ממתין לייצוא WAV...";
+        waitForFile(audioOutPath, 60000, () => {
+            log("WAV file ready, size: " + fs.statSync(audioOutPath).size);
+            statusDiv.innerText = "מתמלל... (אנא המתן)";
+            // העברת range כפרמטר נוסף
+            runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device, range);
+        }, () => {
+            log("WAV file never appeared!");
+            statusDiv.innerText = "שגיאה: קובץ WAV לא נוצר";
+            btnExport.disabled = false;
+        });
     });
 });
-});
 
-function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device) {
+function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device, range) {
     const args = [
         audioPath, srtPath,
         "--language", language,
@@ -120,7 +121,8 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
         
         if (code === 0 && fs.existsSync(srtPath)) {
             statusDiv.innerText = "התמלול הסתיים, מייבא לפרמייר...";
-            const importScript = `importAndPlaceSRT("${srtPath.replace(/\\/g, '\\\\')}")`;
+            // העברת ה-range לפונקציית הייבוא ב-ExtendScript
+            const importScript = `importAndPlaceSRT("${srtPath.replace(/\\/g, '\\\\')}", "${range}")`;
             csInterface.evalScript(importScript, (importResult) => {
                 log("Import result: " + importResult);
                 statusDiv.innerText = "התהליך הושלם בהצלחה!";

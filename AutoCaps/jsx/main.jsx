@@ -36,7 +36,7 @@ function getOrCreateAutoCapsFolder() {
     return root.createBin("AutoCaps");
 }
 
-function importAndPlaceSRT(srtPath) {
+function importAndPlaceSRT(srtPath, range) {
     try {
         var seq = app.project.activeSequence;
         if (!seq) return "ERROR_NO_SEQUENCE";
@@ -47,7 +47,7 @@ function importAndPlaceSRT(srtPath) {
         var autoCapsFolder = getOrCreateAutoCapsFolder();
         if (!autoCapsFolder) return "ERROR_CANT_CREATE_FOLDER";
 
-        // שמירת כמות הפריטים הנוכחית בתיקייה
+        // שמירת כמות הפריטים הנוכחית בתיקייה כדי לזהות את הקובץ החדש
         var beforeImportCount = autoCapsFolder.children.numItems;
 
         // ייבוא הקובץ ישירות לתיקיית AutoCaps
@@ -58,6 +58,23 @@ function importAndPlaceSRT(srtPath) {
 
         // הפריט האחרון שנוסף לתיקייה הוא ה-SRT שייבאנו
         var srtProjectItem = autoCapsFolder.children[autoCapsFolder.children.numItems - 1];
+
+        // --- חישוב מיקום ההתחלה ---
+        var startSeconds = 0;
+
+        // אם המשתמש לא בחר לייצא את כל הסיקוונס (כלומר בחר In/Out או Workarea)
+        if (range !== "entire") {
+            if (typeof seq.getInPoint === "function" || seq.getInPoint !== undefined) {
+                try {
+                    var inPointSec = parseFloat(seq.getInPoint());
+                    if (!isNaN(inPointSec) && inPointSec >= 0) {
+                        startSeconds = inPointSec;
+                    }
+                } catch (eIn) {
+                    startSeconds = 0; // ברירת מחדל להתחלה במקרה של שגיאה
+                }
+            }
+        }
 
         // בדיקה האם פרמייר תומכת ביצירת ערוץ כתוביות נייטיב (גרסאות חדשות)
         if (typeof seq.createCaptionTrack === "function") {
@@ -71,9 +88,9 @@ function importAndPlaceSRT(srtPath) {
 
                 var isCreated = false;
                 if (format !== undefined) {
-                    isCreated = seq.createCaptionTrack(srtProjectItem, 0, format);
+                    isCreated = seq.createCaptionTrack(srtProjectItem, startSeconds, format);
                 } else {
-                    isCreated = seq.createCaptionTrack(srtProjectItem, 0);
+                    isCreated = seq.createCaptionTrack(srtProjectItem, startSeconds);
                 }
 
                 if (isCreated) {
@@ -82,7 +99,7 @@ function importAndPlaceSRT(srtPath) {
             } catch (eCaptionTrack) {
                 // ניסיון אחרון ליצירת ערוץ כתוביות ללא הגדרת פורמט ספציפי
                 try {
-                    if (seq.createCaptionTrack(srtProjectItem, 0)) {
+                    if (seq.createCaptionTrack(srtProjectItem, startSeconds)) {
                         return "SUCCESS";
                     }
                 } catch (eCaptionTrackBackup) {
@@ -92,15 +109,15 @@ function importAndPlaceSRT(srtPath) {
         }
 
         // --- Fallback לגרסאות ישנות של פרמייר ---
-        // ננסה להניח את קובץ הכתוביות על ערוץ הוידאו העליון ביותר
+        // ננסה להניח את קובץ הכתוביות על ערוץ הוידאו העליון ביותר במיקום המחושב
         var trackCount = seq.videoTracks.numTracks;
         if (trackCount > 0) {
             try {
                 var topTrack = seq.videoTracks[trackCount - 1];
-                var timeZero = seq.getPlayerPosition();
-                timeZero.seconds = 0;
+                var insertTime = seq.getPlayerPosition();
+                insertTime.seconds = startSeconds; // הגדרת הזמן המדויק להשחלה
                 
-                topTrack.insertClip(srtProjectItem, timeZero);
+                topTrack.insertClip(srtProjectItem, insertTime);
                 return "SUCCESS";
             } catch (eInsertClip) {
                 // אם גם זה נכשל, לפחות ייבאנו את הקובץ בהצלחה לתיקיית הפרויקט

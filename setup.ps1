@@ -10,6 +10,40 @@ $sourcePath = "$PSScriptRoot\$extensionName"
 # Changed to AppData\Roaming folder
 $cepDir = "$env:APPDATA\Adobe\CEP\extensions\$extensionName"
 
+# פונקציית הורדה חכמה וחסינת תקלות עם Fallback
+function Download-File {
+    param (
+        [string]$Url,
+        [string]$Path
+    )
+    Write-Host "Downloading $Url to $Path..."
+    
+    # ביטול זמני של ה-Progress Bar ב-Invoke-WebRequest למניעת איטיות בגרסאות PowerShell ישנות
+    $oldProgressPreference = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    
+    try {
+        # ניסיון ראשון בעזרת BITS (הכי יציב להורדות גדולות עם פס התקדמות מערכתי)
+        Start-BitsTransfer -Source $Url -Destination $Path -ErrorAction Stop
+    } catch {
+        Write-Warning "BITS transfer failed. Retrying with Invoke-WebRequest..."
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $Path -ErrorAction Stop
+        } catch {
+            Write-Warning "Invoke-WebRequest failed. Trying with .NET WebClient..."
+            try {
+                $webClient = New-Object System.Net.WebClient
+                $webClient.DownloadFile($Url, $Path)
+            } catch {
+                $ProgressPreference = $oldProgressPreference
+                throw "Failed to download $Url. Error: $_"
+            }
+        }
+    }
+    
+    $ProgressPreference = $oldProgressPreference
+}
+
 # 1. Install Extension to Premiere Pro CEP Folder
 Write-Host "Installing AutoCaps Extension..."
 if (!(Test-Path $cepDir)) {
@@ -28,53 +62,23 @@ Write-Host "Creating Directories..."
 if (!(Test-Path $modelsDir)) { New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null }
 if (!(Test-Path $cudaDir)) { New-Item -ItemType Directory -Force -Path $cudaDir | Out-Null }
 
-# 3. Install Models
-# FIX: Added parentheses around (Test-Path $modelsDir)
-if ((Test-Path $modelsDir) -and (Get-ChildItem $modelsDir)) {
-    Write-Host "Models are already installed. Skipping..."
-} else {
-    Write-Host "Installing Models..."
-    # OPTION A: If you put a "models" folder next to setup.ps1, it will copy it over:
-    $localModelsFolder = "$PSScriptRoot\models"
-    if (Test-Path $localModelsFolder) {
-        Copy-Item -Path "$localModelsFolder\*" -Destination $modelsDir -Recurse -Force
-        Write-Host "Models copied successfully from local folder."
-    } else {
-        Write-Host "No local 'models' folder found."
-        
-        # OPTION B: Download from URL
-        <#
-        $modelZipPath = "$env:TEMP\models.zip"
-        $modelDownloadLink = "YOUR_MODEL_DOWNLOAD_LINK_HERE"
-        Write-Host "Downloading models..."
-        Import-Module BitsTransfer
-        Start-BitsTransfer -Source $modelDownloadLink -Destination $modelZipPath -Description "Downloading Models" -DisplayName "AutoCaps Setup"
-        Write-Host "Extracting models..."
-        Expand-Archive -Path $modelZipPath -DestinationPath $modelsDir -Force
-        Remove-Item $modelZipPath
-        Write-Host "Models installed successfully."
-        #>
-    }
-}
 
-# 4. Check for NVIDIA GPU & Install CUDA
+# 3. Check for NVIDIA GPU & Install CUDA
 Write-Host "Checking for NVIDIA GPU..."
 $gpu = Get-WmiObject Win32_VideoController | Where-Object { $_.Name -match "NVIDIA" }
 
 if ($gpu) {
     Write-Host "NVIDIA GPU Detected: $($gpu.Name)"
     
-    # FIX: Added parentheses around (Test-Path $cudaDir)
     if ((Test-Path $cudaDir) -and (Get-ChildItem $cudaDir)) {
         Write-Host "CUDA tools are already installed. Skipping download..."
     } else {
         $zipPath = "$env:TEMP\cuda.zip"
-        $downloadLink = "enter_url_here"
+        $downloadLink = "https://github.com/neriacohen300/AutoCaps/releases/download/CUDA/cuda-toolkit-download.zip"
         
         try {
             Write-Host "Downloading CUDA tools (This might take a moment)..."
-            Import-Module BitsTransfer
-            Start-BitsTransfer -Source $downloadLink -Destination $zipPath -Description "Downloading CUDA Pack" -DisplayName "AutoCaps Setup"
+            Download-File -Url $downloadLink -Path $zipPath
             
             Write-Host "`nExtracting CUDA tools to $cudaDir..."
             Expand-Archive -Path $zipPath -DestinationPath $cudaDir -Force
