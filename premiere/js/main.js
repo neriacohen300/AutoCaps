@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 
 const csInterface = new CSInterface();
@@ -256,3 +256,272 @@ btnCutSilence.addEventListener('click', () => {
         }
     });
 });
+
+
+// ==========================================
+// 🎙️ עריכת פודקאסט אוטומטית - 2 עד 4 משתתפים + זווית "כולם ביחד" אופציונלית
+// כל דובר = טראק וידאו נפרד + טראק אודיו נפרד. המערכת מזהה מי מדבר על פי שקטים
+// בכל טראק אודיו בנפרד, ומחליפה אוטומטית בין המצלמות בהתאם.
+// ==========================================
+
+function $(id) { return document.getElementById(id); }
+
+// עוטף את csInterface.evalScript ב-Promise כדי לאפשר קוד async/await נקי יותר
+function lcEvalJsx(script) {
+    return new Promise((resolve) => {
+        csInterface.evalScript(script, resolve);
+    });
+}
+
+// בונה מחדש את שורות "וידאו/אודיו לכל דובר" בממשק, לפי כמות המשתתפים שנבחרה
+function renderPodcastSpeakerRows() {
+    const count = parseInt($("podSpeakerCount").value, 10);
+    const container = $("podSpeakersContainer");
+    container.innerHTML = "";
+
+    for (let i = 1; i <= count; i++) {
+        const row = document.createElement("div");
+        row.className = "field-row";
+        row.style.marginTop = "8px";
+        row.innerHTML = `
+            <div class="field-group">
+                <label>וידאו - דובר ${i}</label>
+                <input type="number" id="podSpk${i}Vid" value="${i}" min="1">
+            </div>
+            <div class="field-group">
+                <label>אודיו - דובר ${i}</label>
+                <input type="number" id="podSpk${i}Aud" value="${i}" min="1">
+            </div>
+        `;
+        container.appendChild(row);
+    }
+}
+
+$("podSpeakerCount").addEventListener("change", renderPodcastSpeakerRows);
+$("podUseMaster").addEventListener("change", () => {
+    $("podMasterTrackWrap").style.display = $("podUseMaster").checked ? "flex" : "none";
+});
+renderPodcastSpeakerRows(); // אתחול ראשוני עם הכמות שנבחרה כברירת מחדל (2)
+
+// מריץ FFmpeg על קובץ אודיו של דובר בודד, ומחזיר גם משך כולל וגם רשימת קטעי שקט
+function analyzeTrackSilence(wavPath, thresholdDb, minSilenceSec) {
+    return new Promise((resolve, reject) => {
+        if (!fs.existsSync(Config.ffmpegPath)) {
+            reject(new Error("FFmpeg לא נמצא בנתיב: " + Config.ffmpegPath));
+            return;
+        }
+        const args = [
+            "-i", wavPath,
+            "-af", `silencedetect=noise=${thresholdDb}dB:d=${minSilenceSec}`,
+            "-f", "null", "-"
+        ];
+        execFile(Config.ffmpegPath, args, (execErr, stdout, stderr) => {
+            const out = (stdout || "") + (stderr || "");
+
+            let duration = 0;
+            const mDur = out.match(/Duration:\s+(\d+):(\d+):([\d.]+)/);
+            if (mDur) {
+                duration = parseInt(mDur[1], 10) * 3600 + parseInt(mDur[2], 10) * 60 + parseFloat(mDur[3]);
+            }
+
+            const silences = [];
+            const lines = out.split("\n");
+            let currentStart = null;
+            for (let i = 0; i < lines.length; i++) {
+                const mStart = lines[i].match(/silence_start:\s+([\d.]+)/);
+                if (mStart) currentStart = parseFloat(mStart[1]);
+
+                const mEnd = lines[i].match(/silence_end:\s+([\d.]+)/);
+                if (mEnd && currentStart !== null) {
+                    silences.push({ start: currentStart, end: parseFloat(mEnd[1]) });
+                    currentStart = null;
+                }
+            }
+            if (currentStart !== null && duration > currentStart) {
+                silences.push({ start: currentStart, end: duration });
+            }
+
+            resolve({ silences, duration });
+        });
+    });
+}
+
+function isSilentAt(time, silenceArray) {
+    for (let i = 0; i < silenceArray.length; i++) {
+        if (time >= silenceArray[i].start && time <= silenceArray[i].end) return true;
+    }
+    return false;
+}
+
+let podcastBusy = false;
+
+async function runPodcastDirector() {
+    if (podcastBusy) {
+        alert("עריכת הפודקאסט כבר רצה כרגע. אנא המתן לסיום.");
+        return;
+    }
+    podcastBusy = true;
+
+    const btn = $("btnPodcastDirector");
+    const statusDiv = $("statusPodcast");
+    const progressWrap = $("podcastProgressWrap");
+    const barFill = $("barFillPodcast");
+    const statusLine = $("statusLinePodcast");
+
+    btn.disabled = true;
+    progressWrap.classList.remove("hidden");
+
+    function setProgress(text, pct) {
+        statusLine.textContent = text;
+        if (typeof pct === "number") {
+            barFill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+        }
+    }
+
+    try {
+        // --- קריאת הגדרות מהממשק ---
+        const speakerCount = parseInt($("podSpeakerCount").value, 10);
+        const useMaster = $("podUseMaster").checked;
+        const masterVidTrack = useMaster ? (parseInt($("podMasterVid").value, 10) - 1) : null;
+
+        const threshold = parseFloat($("podThreshold").value);
+        const minSilenceMs = parseFloat($("podMinSilence").value);
+        const minSilenceSec = minSilenceMs / 1000.0;
+        const minShotDuration = parseFloat($("podMinShot").value);
+
+        if (speakerCount < 2 || speakerCount > 4) {
+            throw new Error("נתמכים בין 2 ל-4 משתתפים בלבד");
+        }
+
+        const speakers = [];
+        for (let i = 1; i <= speakerCount; i++) {
+            speakers.push({
+                videoTrack: parseInt($("podSpk" + i + "Vid").value, 10) - 1,
+                audioTrack: parseInt($("podSpk" + i + "Aud").value, 10) - 1
+            });
+        }
+
+        statusDiv.innerText = "מייצא ומנתח אודיו לכל דובר...";
+        const uniqueID = Date.now();
+
+        // --- שלב 1: ייצוא וניתוח אודיו לכל דובר בנפרד (טראק אודיו נפרד לכל דובר) ---
+        for (let i = 0; i < speakers.length; i++) {
+            const spk = speakers[i];
+            const wavPath = path.join(Config.tempDir, `pod_spk${i + 1}_${uniqueID}.wav`);
+
+            setProgress(`מייצא אודיו - דובר ${i + 1}...`, (i / speakers.length) * 40);
+            const exportScript = `lcExportSingleTrackAudio("${wavPath.replace(/\\/g, '\\\\')}", "${Config.presetPath.replace(/\\/g, '\\\\')}", 0, ${spk.audioTrack})`;
+            const exportResRaw = await lcEvalJsx(exportScript);
+
+            let exportRes;
+            try { exportRes = JSON.parse(exportResRaw); } catch (e) { exportRes = { ok: false, error: exportResRaw }; }
+            if (!exportRes || !exportRes.ok) {
+                throw new Error(`ייצוא אודיו לדובר ${i + 1} נכשל: ${exportRes ? exportRes.error : exportResRaw}`);
+            }
+
+            setProgress(`מנתח שקט - דובר ${i + 1}...`, (i / speakers.length) * 40 + 10);
+            const analysis = await analyzeTrackSilence(wavPath, threshold, minSilenceSec);
+            spk.silences = analysis.silences;
+            spk.duration = analysis.duration;
+
+            try { fs.unlinkSync(wavPath); } catch (e) {}
+        }
+
+        // --- שלב 2: בניית ציר זמן אירועים משותף (כל תחילות/סופי שקט + משכי הטראקים) ---
+        setProgress("מחשב מפת חיתוכים...", 45);
+        const events = [0];
+        speakers.forEach((spk) => {
+            if (spk.duration > 0 && events.indexOf(spk.duration) === -1) events.push(spk.duration);
+            spk.silences.forEach((s) => {
+                if (events.indexOf(s.start) === -1) events.push(s.start);
+                if (events.indexOf(s.end) === -1) events.push(s.end);
+            });
+        });
+        events.sort((a, b) => a - b);
+
+        // --- שלב 3: קביעת מצלמה פעילה לכל קטע זמן ---
+        // דובר יחיד מדבר -> המצלמה שלו. אף אחד/כמה דוברים ביחד -> זווית "כולם ביחד" אם קיימת, אחרת נשארים על המצלמה האחרונה.
+        const cutsMap = [];
+        let lastCamera = (masterVidTrack !== null) ? masterVidTrack : speakers[0].videoTrack;
+
+        for (let i = 0; i < events.length - 1; i++) {
+            const chunkStart = events[i];
+            const chunkEnd = events[i + 1];
+            if (chunkEnd - chunkStart < 0.05) continue;
+
+            const midPoint = (chunkStart + chunkEnd) / 2.0;
+            const activeSpeakers = speakers.filter((spk) => !isSilentAt(midPoint, spk.silences));
+
+            let chosenVidTrack;
+            if (activeSpeakers.length === 1) {
+                chosenVidTrack = activeSpeakers[0].videoTrack;
+            } else {
+                // 0 דוברים או כמה דוברים בו-זמנית
+                chosenVidTrack = (masterVidTrack !== null) ? masterVidTrack : lastCamera;
+            }
+
+            lastCamera = chosenVidTrack;
+
+            if (cutsMap.length > 0 && cutsMap[cutsMap.length - 1].activeVidTrack === chosenVidTrack) {
+                cutsMap[cutsMap.length - 1].end = chunkEnd;
+            } else {
+                cutsMap.push({ start: chunkStart, end: chunkEnd, activeVidTrack: chosenVidTrack });
+            }
+        }
+
+        // --- שלב 4: מעבר החלקה - מיזוג שוטים קצרים מדי כדי למנוע קאטים עצבניים ---
+        setProgress("מחליק חיתוכים קצרים מדי...", 70);
+        let needsAnotherPass = true;
+        while (needsAnotherPass) {
+            needsAnotherPass = false;
+            for (let k = 1; k < cutsMap.length - 1; k++) {
+                const cut = cutsMap[k];
+                const dur = cut.end - cut.start;
+                if (dur < minShotDuration) {
+                    const prevCut = cutsMap[k - 1];
+                    const nextCut = cutsMap[k + 1];
+                    if (prevCut.activeVidTrack === nextCut.activeVidTrack) {
+                        prevCut.end = nextCut.end;
+                        cutsMap.splice(k, 2);
+                    } else {
+                        prevCut.end = cut.end;
+                        cutsMap.splice(k, 1);
+                        nextCut.start = prevCut.end;
+                    }
+                    needsAnotherPass = true;
+                    break;
+                }
+            }
+        }
+
+        // --- שלב 5: יישום החיתוכים בטיימליין בפרימייר ---
+        setProgress("מבצע חיתוכים בטיימליין...", 90);
+        const involvedTracks = speakers.map((s) => s.videoTrack);
+        if (masterVidTrack !== null) involvedTracks.push(masterVidTrack);
+
+        const payload = { tracks: involvedTracks, cuts: cutsMap };
+        const jsonStr = JSON.stringify(payload).replace(/'/g, "\\'");
+        const applyScript = `lcApplyPodcastEditsGeneric('${jsonStr}')`;
+
+        const applyResultRaw = await lcEvalJsx(applyScript);
+        let applyResult;
+        try { applyResult = JSON.parse(applyResultRaw); } catch (e) { applyResult = { ok: false, error: applyResultRaw }; }
+
+        if (!applyResult || !applyResult.ok) {
+            throw new Error(applyResult ? applyResult.error : "שגיאה לא ידועה ביישום החיתוכים");
+        }
+
+        setProgress("הושלם!", 100);
+        statusDiv.innerText = `עריכת הפודקאסט הושלמה בהצלחה! (${cutsMap.length} חיתוכים)`;
+
+    } catch (error) {
+        statusDiv.innerText = "שגיאה: " + error.message;
+        setProgress("שגיאה בתהליך", 0);
+        alert("שגיאה בעריכת הפודקאסט: " + error.message);
+    } finally {
+        podcastBusy = false;
+        btn.disabled = false;
+    }
+}
+
+$("btnPodcastDirector").addEventListener("click", runPodcastDirector);

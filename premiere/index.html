@@ -43,7 +43,7 @@
                         </div>
                         <div class="field-group">
                             <label for="maxLines">שורות בכתובית</label>
-                            <input type="number" id="maxLines" value="2" min="1">
+                            <input type="number" id="maxLines" value="1" min="1">
                         </div>
                     </div>
                     <label class="checkbox-wrapper" for="removePunctuation">
@@ -85,11 +85,11 @@
                         </div>
                         <div class="field-group">
                             <label for="silDuration">אורך שקט (ms)</label>
-                            <input type="number" id="silDuration" value="500" min="100">
+                            <input type="number" id="silDuration" value="150" min="100">
                         </div>
                         <div class="field-group">
                             <label for="silPad">ריפוד שוליים (ms)</label>
-                            <input type="number" id="silPad" value="100" min="0">
+                            <input type="number" id="silPad" value="150" min="0">
                         </div>
                     </div>
                 </div>
@@ -97,6 +97,68 @@
                 <div class="action-zone">
                     <button id="btnCutSilence" style="background-color: #e66a14;">חתוך שקט בטיימליין</button>
                     <div id="statusSilence" style="font-size: 11px; text-align: center; margin-top: 5px; color: var(--text-secondary);">מוכן לחיתוך...</div>
+                </div>
+
+            </div>
+        </details>
+
+        <details class="collapsible-group">
+            <summary class="collapsible-header">עריכת פודקאסט (מעבר מצלמות אוטומטי)</summary>
+            <div class="collapsible-body">
+
+                <div class="section">
+                    <div class="section-title">משתתפים</div>
+                    <div class="field-group">
+                        <label for="podSpeakerCount">כמות משתתפים</label>
+                        <select id="podSpeakerCount">
+                            <option value="2">2 משתתפים</option>
+                            <option value="3">3 משתתפים</option>
+                            <option value="4">4 משתתפים</option>
+                        </select>
+                    </div>
+                    <div id="podSpeakersContainer"></div>
+                </div>
+
+                <div class="section">
+                    <div class="section-title">זווית "כולם ביחד" (אופציונלי)</div>
+                    <label class="checkbox-wrapper" for="podUseMaster">
+                        <input type="checkbox" id="podUseMaster">
+                        <span class="custom-checkbox"></span>
+                        <span class="checkbox-text">יש מצלמה נוספת עם כולם ביחד</span>
+                    </label>
+                    <div class="field-group" id="podMasterTrackWrap" style="display:none; margin-top:8px;">
+                        <label for="podMasterVid">מספר טראק וידאו (כולם ביחד)</label>
+                        <input type="number" id="podMasterVid" value="1" min="1">
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-title">הגדרות זיהוי דיבור וקאטים</div>
+                    <div class="field-row">
+                        <div class="field-group">
+                            <label for="podThreshold">עוצמת רעש (dB)</label>
+                            <input type="number" id="podThreshold" value="-30" max="-10">
+                        </div>
+                        <div class="field-group">
+                            <label for="podMinSilence">אורך שקט מינימלי (ms)</label>
+                            <input type="number" id="podMinSilence" value="500" min="100">
+                        </div>
+                    </div>
+                    <div class="field-group">
+                        <label for="podMinShot">אורך שוט מינימלי (שניות)</label>
+                        <input type="number" id="podMinShot" value="1.2" min="0.2" step="0.1">
+                    </div>
+                </div>
+
+                <div class="action-zone">
+                    <button id="btnPodcastDirector" style="background-color:#7a3ee6;">ערוך פודקאסט אוטומטית</button>
+                    <div id="statusPodcast" style="font-size: 11px; text-align: center; margin-top: 5px; color: var(--text-secondary);">מוכן לעריכה...</div>
+                    <div id="podcastProgressWrap" class="hidden" style="margin-top:6px;">
+                        <div class="progress-track">
+                            <div id="barFillPodcast" class="progress-fill"></div>
+                        </div>
+                        <div id="statusLinePodcast" style="font-size:10px; color: var(--text-secondary); margin-top:4px; text-align:center;"></div>
+                    </div>
                 </div>
 
             </div>

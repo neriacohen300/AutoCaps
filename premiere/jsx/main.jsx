@@ -137,6 +137,168 @@ function err(msg) {
     return '{"ok":false, "error":"' + msg + '"}';
 }
 
+// עוזרי JSON כלליים - משמשים גם את פונקציות הפודקאסט למטה
+function lcEsc(s) {
+    return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
+}
+function lcErr(msg) {
+    return '{"ok":false, "error":"' + lcEsc(String(msg)) + '"}';
+}
+
+// ==========================================
+// 🎙️ עריכת פודקאסט - ייצוא אודיו מטראק בודד (משתיק את כל שאר טראקי האודיו)
+// ==========================================
+function lcExportSingleTrackAudio(outPath, eprPath, rangeType, trackIndex) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return lcErr("no_sequence");
+        trackIndex = parseInt(trackIndex, 10);
+
+        var originalStates = [];
+        for (var i = 0; i < seq.audioTracks.numTracks; i++) {
+            originalStates.push(seq.audioTracks[i].isMuted());
+            seq.audioTracks[i].setMute(i === trackIndex ? 0 : 1);
+        }
+
+        var out = new File(outPath);
+        var epr = new File(eprPath);
+
+        if (!epr.exists) {
+            for (var j = 0; j < seq.audioTracks.numTracks; j++) {
+                seq.audioTracks[j].setMute(originalStates[j] ? 1 : 0);
+            }
+            return lcErr("קובץ ה-EPR לא נמצא בנתיב: " + eprPath);
+        }
+
+        var rType = parseInt(rangeType, 10) === 1 ? 1 : 0;
+        var result = seq.exportAsMediaDirect(out.fsName, epr.fsName, rType);
+
+        // שחזור מצב ההשתקה המקורי של הטראקים תמיד, גם אם הייצוא נכשל
+        for (var k = 0; k < seq.audioTracks.numTracks; k++) {
+            seq.audioTracks[k].setMute(originalStates[k] ? 1 : 0);
+        }
+
+        if (result) {
+            return '{"ok":true, "res":"' + lcEsc(String(result)) + '"}';
+        }
+        return lcErr("export_failed_silently: פרימייר ביטלה את הייצוא באופן פנימי.");
+    } catch (e) {
+        return lcErr("export_exception: " + e.toString());
+    }
+}
+
+// ==========================================
+// 🎬 עריכת פודקאסט - יישום מפת החיתוכים (תומך בכל כמות טראקי וידאו/דוברים)
+// data = { tracks: [videoTrackIndex, ...], cuts: [{start, end, activeVidTrack}, ...] }
+// כל טראק וידאו שברשימת tracks ואיננו activeVidTrack בקטע נתון - הקליפ שלו באותו קטע יושבת (disabled)
+// ==========================================
+function lcApplyPodcastEditsGeneric(dataJson) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return lcErr("no_sequence");
+
+        var data;
+        try { data = eval("(" + dataJson + ")"); }
+        catch (e) { return lcErr("json_parse_failed"); }
+
+        if (!data || !data.cuts || !data.tracks) return lcErr("no_data");
+
+        app.enableQE();
+        var qeSeq = qe.project.getActiveSequence();
+        if (!qeSeq) return lcErr("qe_sequence_not_found");
+
+        var TICKS_PER_SECOND = 254016000000;
+        var tpf = 10160640000;
+        try {
+            if (seq.videoFrameRate && seq.videoFrameRate.ticks) {
+                var parsedTpf = parseInt(seq.videoFrameRate.ticks, 10);
+                if (parsedTpf > 0) tpf = parsedTpf;
+            }
+        } catch (e) {}
+
+        function doRazorSafe(sec) {
+            if (sec < 0) sec = 0;
+            var totalTicks = sec * TICKS_PER_SECOND;
+            var totalFrames = Math.round(totalTicks / tpf);
+            var timebase = Math.round(TICKS_PER_SECOND / tpf);
+
+            var f = totalFrames % timebase;
+            var totalTCSeconds = Math.floor(totalFrames / timebase);
+            var s = totalTCSeconds % 60;
+            var m = Math.floor(totalTCSeconds / 60) % 60;
+            var h = Math.floor(totalTCSeconds / 3600);
+
+            function p(n) { return n < 10 ? "0" + n : "" + n; }
+            var tcNDF = p(h) + ":" + p(m) + ":" + p(s) + ":" + p(f);
+
+            var args = [tcNDF, String(Math.round(totalTicks)), String(sec)];
+            for (var i = 0; i < args.length; i++) {
+                try { if (typeof qeSeq.razor === "function") { qeSeq.razor(args[i]); return; } } catch (e) {}
+            }
+        }
+
+        var cuts = data.cuts;
+        var tracks = data.tracks;
+
+        var cutTimes = [];
+        for (var c = 0; c < cuts.length; c++) {
+            if (cuts[c].start > 0.01) cutTimes.push(cuts[c].start);
+            cutTimes.push(cuts[c].end);
+        }
+        cutTimes.sort(function (a, b) { return b - a; });
+
+        var uniqueCutTimes = [];
+        if (cutTimes.length > 0) {
+            uniqueCutTimes.push(cutTimes[0]);
+            for (var k = 1; k < cutTimes.length; k++) {
+                if (Math.abs(cutTimes[k] - uniqueCutTimes[uniqueCutTimes.length - 1]) > 0.05) {
+                    uniqueCutTimes.push(cutTimes[k]);
+                }
+            }
+        }
+        for (var u = 0; u < uniqueCutTimes.length; u++) {
+            doRazorSafe(uniqueCutTimes[u]);
+        }
+
+        function processTrack(trackIndex) {
+            var track = seq.videoTracks[trackIndex];
+            if (!track || track.isLocked()) return;
+            var clips = track.clips;
+            if (!clips) return;
+
+            for (var j = clips.numItems - 1; j >= 0; j--) {
+                var clip = clips[j];
+                if (!clip) continue;
+
+                var clipStart = parseInt(clip.start.ticks, 10) / TICKS_PER_SECOND;
+                var clipEnd = parseInt(clip.end.ticks, 10) / TICKS_PER_SECOND;
+                var clipMid = (clipStart + clipEnd) / 2.0;
+
+                for (var m2 = 0; m2 < cuts.length; m2++) {
+                    var cData = cuts[m2];
+                    var margin = 0.05;
+                    if (clipMid > (cData.start - margin) && clipMid < (cData.end + margin)) {
+                        if (trackIndex !== cData.activeVidTrack) {
+                            try { clip.disabled = true; } catch (e) {}
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (var t = 0; t < tracks.length; t++) {
+            if (tracks[t] !== null && tracks[t] !== undefined && tracks[t] >= 0) {
+                processTrack(tracks[t]);
+            }
+        }
+
+        return '{"ok":true}';
+    } catch (e) {
+        return lcErr("exception: " + e.toString());
+    }
+}
+
 // הפונקציה שלך לביצוע ה-Razor ויצירת החיתוכים
 function cutSilence(intervalsJson) {
     try {

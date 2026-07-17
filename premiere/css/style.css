@@ -256,6 +256,30 @@ button:disabled {
 }
 
 /* =========================================
+   Podcast Director - Progress Bar
+   ========================================= */
+
+.hidden {
+    display: none !important;
+}
+
+.progress-track {
+    width: 100%;
+    height: 6px;
+    background-color: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background-color: var(--accent-blue);
+    transition: width 0.2s ease;
+}
+
+/* =========================================
    Collapsible Segments (Accordions)
    ========================================= */
 
