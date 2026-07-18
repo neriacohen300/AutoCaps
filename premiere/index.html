@@ -184,6 +184,33 @@
             </div>
         </details>
 
+        <details class="collapsible-group">
+    <summary class="collapsible-header">זום אוטומטי חכם (Auto Zoom) - Alpha</summary>
+    <div class="collapsible-body">
+        
+        <div class="section">
+            <div class="field-group">
+                <label for="zoomTrigger">מנגנון הפעלת הזום</label>
+                <select id="zoomTrigger">
+                    <option value="clips">לפי חיתוכים בטיימליין (מושלם אחרי Jump Cuts)</option>
+                    <option value="audio">לפי ניתוח אודיו (מזהה משפטים בקליפ ארוך)</option>
+                </select>
+            </div>
+            
+            <div class="field-group">
+                <label for="zoomIntensity">עוצמת זום (%)</label>
+                <input type="number" id="zoomIntensity" value="115" min="105" max="200" step="1">
+            </div>
+        </div>
+
+        <div class="action-zone">
+            <button id="btnAutoZoom" style="background-color:#1473E6;">החל זום אוטומטי</button>
+            <div id="statusZoom" style="font-size: 11px; text-align: center; margin-top: 5px; color: var(--text-secondary);">מוכן...</div>
+        </div>
+
+    </div>
+</details>
+
     </div>
 
     <script src="js/CSInterface.js"></script>

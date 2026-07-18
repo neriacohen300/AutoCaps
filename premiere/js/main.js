@@ -595,3 +595,74 @@ async function runPodcastDirector() {
 }
 
 $("btnPodcastDirector").addEventListener("click", runPodcastDirector);
+
+
+
+const btnAutoZoom = document.getElementById('btnAutoZoom');
+const statusZoom = document.getElementById('statusZoom');
+
+if (btnAutoZoom) {
+    btnAutoZoom.addEventListener('click', async () => {
+        btnAutoZoom.disabled = true;
+        statusZoom.style.color = "var(--text-primary)";
+        
+        const trigger = document.getElementById('zoomTrigger').value;
+        const intensity = parseFloat(document.getElementById('zoomIntensity').value);
+
+        if (trigger === "clips") {
+            statusZoom.innerText = "מחיל זום לסירוגין על הקליפים בטיימליין...";
+            const payload = { mode: "clips", intensity: intensity };
+            const script = `applySmartAutoZooms('${JSON.stringify(payload).replace(/'/g, "\\'")}')`;
+            
+            csInterface.evalScript(script, handleZoomResult);
+        } 
+        else if (trigger === "audio") {
+            statusZoom.innerText = "מייצא אודיו לניתוח (שלב 1/3)...";
+            const wavPath = path.join(Config.tempDir, `zoom_audio_${Date.now()}.wav`);
+            
+            // ייצוא אודיו (משתמש ב-Preset שלך)
+            const exportScript = `exportAudioForTranscription("${wavPath.replace(/\\/g, '\\\\')}", "entire", "${Config.presetPath.replace(/\\/g, '\\\\')}")`;
+            
+            csInterface.evalScript(exportScript, async (exportRes) => {
+                if (exportRes !== "SUCCESS") {
+                    statusZoom.innerText = "שגיאה בייצוא האודיו מפרימייר.";
+                    btnAutoZoom.disabled = false;
+                    return;
+                }
+                
+                statusZoom.innerText = "מנתח גלי קול ומשפטים (שלב 2/3)...";
+                try {
+                    const jsonPath = path.join(Config.tempDir, `zoom_silence_${Date.now()}.json`);
+                    // משתמש בפונקציית detectSilence שכבר כתבנו קודם לחיתוך שקט
+                    // סף -35dB למשך 200ms מהווה זיהוי מצוין של הפרדה בין משפטים
+                    const silences = await detectSilence(wavPath, jsonPath, -35, 200, 50); 
+                    
+                    statusZoom.innerText = "מחיל זומים מסונכרנים לדיבור (שלב 3/3)...";
+                    const payload = { mode: "audio", intensity: intensity, silences: silences };
+                    const script = `applySmartAutoZooms('${JSON.stringify(payload).replace(/'/g, "\\'")}')`;
+                    
+                    csInterface.evalScript(script, handleZoomResult);
+                } catch(e) {
+                    statusZoom.innerText = "שגיאה בניתוח האודיו.";
+                    btnAutoZoom.disabled = false;
+                }
+            });
+        }
+    });
+}
+
+function handleZoomResult(res) {
+    btnAutoZoom.disabled = false;
+    try {
+        const result = JSON.parse(res);
+        if (result.ok) {
+            statusZoom.innerText = `הושלם בהצלחה! הוחל על ${result.count} אלמנטים.`;
+            statusZoom.style.color = "#4CAF50";
+        } else {
+            statusZoom.innerText = "שגיאה: " + result.error;
+            statusZoom.style.color = "#F44336";
+        }
+    } catch (e) {
+        statusZoom.innerText = "שגיאה לא ידועה.";
+    }
+}

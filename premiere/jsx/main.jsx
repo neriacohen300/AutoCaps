@@ -432,3 +432,304 @@ function cutSilence(intervalsJson) {
         return lcErr("exception: " + err.toString());
     }
 }
+
+
+function applyAutoZooms(dataJson) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"ok":false, "error":"אין סיקוונס פעיל"}';
+
+        var data;
+        try { 
+            data = eval("(" + dataJson + ")"); 
+        } catch(e) { 
+            return '{"ok":false, "error":"שגיאת פענוח נתונים"}'; 
+        }
+
+        // Apply to the first targeted video track. Modify if you want it to target specific tracks.
+        var targetTrack = seq.videoTracks[0]; 
+        if (!targetTrack || targetTrack.clips.numItems === 0) {
+            return '{"ok":false, "error":"לא נמצאו קליפים בערוץ הוידאו הראשון"}';
+        }
+
+        var clips = targetTrack.clips;
+        var appliedCount = 0;
+
+        for (var i = 0; i < clips.numItems; i++) {
+            var clip = clips[i];
+            
+            // If Alternating frequency is selected, skip every other clip
+            if (data.frequency === "alternating" && i % 2 !== 0) continue;
+            
+            var motionEffect = null;
+            // Find the intrinsic "Motion" component
+            for (var c = 0; c < clip.components.numItems; c++) {
+                if (clip.components[c].matchName === "AE.ADBE Motion") {
+                    motionEffect = clip.components[c];
+                    break;
+                }
+            }
+            
+            if (!motionEffect) continue;
+
+            var scaleProp = motionEffect.properties[1]; // Index 1 is always Scale in Motion
+            var startSec = clip.start.seconds;
+            var endSec = clip.end.seconds;
+            var duration = endSec - startSec;
+
+            if (data.style === "jump") {
+                // Style 1: Jump Cut (Hard and instant zoom, no keyframes)
+                scaleProp.setTimeVarying(false); 
+                scaleProp.setValue(data.intensity, 1);
+            } 
+            else if (data.style === "smooth") {
+                // Style 2: Smooth (Cinematic zoom in and out)
+                scaleProp.setTimeVarying(true); // Enables Keyframing
+                
+                scaleProp.addKey(startSec);
+                scaleProp.setValueAtKey(startSec, 100, 1);
+                
+                var midPoint = startSec + (duration / 2);
+                scaleProp.addKey(midPoint);
+                scaleProp.setValueAtKey(midPoint, data.intensity, 1);
+                
+                scaleProp.addKey(endSec);
+                scaleProp.setValueAtKey(endSec, 100, 1);
+            }
+            else if (data.style === "snap") {
+                // Style 3: Snap In (Fast progressive zoom, then hold)
+                scaleProp.setTimeVarying(true);
+                
+                scaleProp.addKey(startSec);
+                scaleProp.setValueAtKey(startSec, 100, 1);
+                
+                // Snap in over 0.25 seconds or 20% of the clip duration (whichever is faster)
+                var snapTime = startSec + Math.min(0.25, duration * 0.2); 
+                scaleProp.addKey(snapTime);
+                scaleProp.setValueAtKey(snapTime, data.intensity, 1);
+                
+                // Hold zoom until the end
+                scaleProp.addKey(endSec);
+                scaleProp.setValueAtKey(endSec, data.intensity, 1);
+            }
+            
+            appliedCount++;
+        }
+
+        return '{"ok":true, "count":' + appliedCount + '}';
+    } catch (err) {
+        return '{"ok":false, "error":"' + err.toString() + '"}';
+    }
+}
+
+
+function applyAutoZoomsOnLongClips(dataJsonStr) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"ok":false, "error":"אין סיקוונס פעיל"}';
+
+        var data;
+        try { 
+            data = eval("(" + dataJsonStr + ")"); 
+        } catch(e) { 
+            return '{"ok":false, "error":"שגיאת פענוח נתונים"}'; 
+        }
+
+        // נריץ על הערוץ הראשון (V1). אם תרצה, אפשר לשנות לערוץ בחירה בהמשך.
+        var targetTrack = seq.videoTracks[0]; 
+        if (!targetTrack || targetTrack.clips.numItems === 0) {
+            return '{"ok":false, "error":"לא נמצאו קליפים בערוץ הוידאו V1"}';
+        }
+
+        var clips = targetTrack.clips;
+        var appliedCount = 0;
+
+        for (var i = 0; i < clips.numItems; i++) {
+            var clip = clips[i];
+            
+            var motionEffect = null;
+            // חיפוש אפקט Motion המובנה שכולל את פרמטר ה-Scale
+            for (var c = 0; c < clip.components.numItems; c++) {
+                if (clip.components[c].matchName === "AE.ADBE Motion") {
+                    motionEffect = clip.components[c];
+                    break;
+                }
+            }
+            if (!motionEffect) continue;
+
+            // מאפיין מספר 1 באפקט Motion הוא ה-Scale
+            var scaleProp = motionEffect.properties[1]; 
+            scaleProp.setTimeVarying(true); // הדלקת שעון עצר (Keyframes)
+
+            var startSec = clip.start.seconds;
+            var endSec = clip.end.seconds;
+            
+            var interval = data.interval; // כל כמה שניות לזוז
+            var intensity = data.intensity;
+            
+            var currentTime = startSec;
+            var isZoomedIn = false;
+
+            // המערכת "הולכת" בתוך הקליפ צעד-צעד לפי האינטרוול שנבחר
+            while (currentTime < endSec - 0.5) {
+                var nextTime = currentTime + interval;
+                if (nextTime > endSec) nextTime = endSec;
+
+                var currentScaleValue = isZoomedIn ? intensity : 100;
+                var nextScaleValue = isZoomedIn ? 100 : intensity;
+
+                if (data.style === "jump") {
+                    // קאט חד באמצעות Keyframes צמודים
+                    scaleProp.addKey(currentTime);
+                    scaleProp.setValueAtKey(currentTime, currentScaleValue, 1);
+                    
+                    if (nextTime < endSec) {
+                        scaleProp.addKey(nextTime - 0.01);
+                        scaleProp.setValueAtKey(nextTime - 0.01, currentScaleValue, 1);
+                    }
+                } 
+                else if (data.style === "smooth") {
+                    // תנועה חלקה (Breathing zoom) כל האינטרוול
+                    scaleProp.addKey(currentTime);
+                    scaleProp.setValueAtKey(currentTime, currentScaleValue, 1);
+                    
+                    scaleProp.addKey(nextTime);
+                    scaleProp.setValueAtKey(nextTime, nextScaleValue, 1);
+                } 
+                else if (data.style === "snap") {
+                    // כניסה מהירה (0.3 שניות) ואז השהייה סטטית
+                    scaleProp.addKey(currentTime);
+                    scaleProp.setValueAtKey(currentTime, currentScaleValue, 1);
+                    
+                    var snapTime = Math.min(currentTime + 0.3, nextTime);
+                    scaleProp.addKey(snapTime);
+                    scaleProp.setValueAtKey(snapTime, nextScaleValue, 1);
+
+                    if (nextTime < endSec) {
+                        scaleProp.addKey(nextTime - 0.01);
+                        scaleProp.setValueAtKey(nextTime - 0.01, nextScaleValue, 1);
+                    }
+                }
+
+                currentTime = nextTime;
+                isZoomedIn = !isZoomedIn;
+                appliedCount++;
+            }
+        }
+
+        return '{"ok":true, "count":' + appliedCount + '}';
+    } catch (err) {
+        return '{"ok":false, "error":"' + err.toString() + '"}';
+    }
+}
+
+
+function applySmartAutoZooms(dataJsonStr) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return '{"ok":false, "error":"אין סיקוונס פעיל"}';
+
+        var data;
+        try { 
+            data = eval("(" + dataJsonStr + ")"); 
+        } catch(e) { 
+            return '{"ok":false, "error":"שגיאת פענוח נתונים"}'; 
+        }
+
+        var targetTrack = seq.videoTracks[0]; 
+        if (!targetTrack || targetTrack.clips.numItems === 0) {
+            return '{"ok":false, "error":"לא נמצאו קליפים בערוץ V1"}';
+        }
+
+        var clips = targetTrack.clips;
+        var appliedCount = 0;
+
+        if (data.mode === "clips") {
+            // מוד 1: זום לסירוגין - עובד מדהים על מלא קליפים קטנים אחרי Jump Cut
+            var zoomIn = false; // מתחילים מקליפ רגיל
+            for (var i = 0; i < clips.numItems; i++) {
+                var clip = clips[i];
+                var motionEffect = getMotionEffect(clip);
+                if (!motionEffect) continue;
+                
+                var scaleProp = motionEffect.properties[1];
+                scaleProp.setTimeVarying(false); // מבטל Keyframes כדי להחיל זום סטטי ונקי על כל הקליפ
+                scaleProp.setValue(zoomIn ? data.intensity : 100, 1);
+                
+                zoomIn = !zoomIn; // מחליף מצב לקליפ הבא בתור
+                appliedCount++;
+            }
+        } 
+        else if (data.mode === "audio") {
+            // מוד 2: זיהוי משפטים חכם - זום שעוקב אחרי קול בקליפים ארוכים (ללא חיתוך)
+            var silences = data.silences || [];
+            
+            for (var i = 0; i < clips.numItems; i++) {
+                var clip = clips[i];
+                var motionEffect = getMotionEffect(clip);
+                if (!motionEffect) continue;
+                
+                var scaleProp = motionEffect.properties[1];
+                
+                // איפוס והפעלת Keyframes
+                scaleProp.setTimeVarying(false);
+                scaleProp.setTimeVarying(true);
+
+                var cStart = clip.start.seconds;
+                var cEnd = clip.end.seconds;
+                
+                // בניית מערך של חלקי ה"דיבור" (ההיפך מהשקט ש-FFmpeg מצא)
+                var speechSegments = [];
+                var currentSpeechStart = cStart;
+                
+                for (var s = 0; s < silences.length; s++) {
+                    var sil = silences[s];
+                    if (sil.end <= cStart || sil.start >= cEnd) continue;
+                    
+                    var silStartClamped = Math.max(sil.start, cStart);
+                    var silEndClamped = Math.min(sil.end, cEnd);
+                    
+                    if (currentSpeechStart < silStartClamped) {
+                        speechSegments.push({start: currentSpeechStart, end: silStartClamped});
+                    }
+                    currentSpeechStart = silEndClamped;
+                }
+                if (currentSpeechStart < cEnd) {
+                    speechSegments.push({start: currentSpeechStart, end: cEnd});
+                }
+                
+                // עוברים על משפטי הדיבור ומייצרים Keyframes של קאט-וירטואלי (Jump Cut) לפי הדיבור
+                var zoomIn = false;
+                for (var k = 0; k < speechSegments.length; k++) {
+                    var seg = speechSegments[k];
+                    var val = zoomIn ? data.intensity : 100;
+                    
+                    // זום שמתחיל ונגמר בבת אחת (Keyframes מרובעים במהותם)
+                    scaleProp.addKey(seg.start);
+                    scaleProp.setValueAtKey(seg.start, val, 1);
+                    
+                    // מחזיק את הזום עד סוף המשפט
+                    scaleProp.addKey(seg.end - 0.01);
+                    scaleProp.setValueAtKey(seg.end - 0.01, val, 1);
+                    
+                    zoomIn = !zoomIn; // משפט הבא יקבל את הזום ההפוך
+                }
+                appliedCount++;
+            }
+        }
+
+        return '{"ok":true, "count":' + appliedCount + '}';
+    } catch (err) {
+        return '{"ok":false, "error":"' + err.toString() + '"}';
+    }
+}
+
+// פונקציית עזר למציאת ה-Motion Effect בכל קליפ
+function getMotionEffect(clip) {
+    for (var c = 0; c < clip.components.numItems; c++) {
+        if (clip.components[c].matchName === "AE.ADBE Motion") {
+            return clip.components[c];
+        }
+    }
+    return null;
+}
