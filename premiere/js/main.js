@@ -303,19 +303,35 @@ $("podUseMaster").addEventListener("change", () => {
 });
 renderPodcastSpeakerRows(); // אתחול ראשוני עם הכמות שנבחרה כברירת מחדל (2)
 
-// מריץ FFmpeg על קובץ אודיו של דובר בודד, ומחזיר גם משך כולל וגם רשימת קטעי שקט
-function analyzeTrackSilence(wavPath, thresholdDb, minSilenceSec) {
-    return new Promise((resolve, reject) => {
+// ==========================================
+// 🎚️ מנוע ניתוח עוצמה (RMS) חלונאי - מחליף את זיהוי השקט הבינארי הישן.
+// במקום "שקט/לא שקט" per טראק בנפרד, בונים ציר עוצמה (dB) לכל דובר בחלוני זמן קבועים,
+// ולאחר מכן משווים בין הדוברים בו-זמנית כדי לקבוע מי *באמת* דומיננטי בכל רגע.
+// זה פותר בעיית "בליד" מיקרופון (דובר שקט נשמע קצת בטראק של דובר אחר) ומאפשר היסטרזיס.
+// ==========================================
+const ENERGY_WINDOW_MS = 100;      // רזולוציית הדגימה לניתוח עוצמה
+const ENERGY_SAMPLE_RATE = 48000;  // קצב דגימה אחיד לצורך חלונות עקביים בין דוברים
+
+function escFfmpegFilterPath(p) {
+    return p.replace(/\\/g, '/').replace(/:/g, '\\:');
+}
+
+// מריץ FFmpeg על קובץ אודיו של דובר בודד ומחזיר סדרת עוצמות (dB) בחלונות קבועים + משך כולל.
+// המטא-דאטה (RMS_level) מודפסת ישירות ל-stderr (ametadata=print בלי file=) כדי להימנע
+// מבעיות escaping עדינות בנתיבי Windows (רווחים/עברית/אותיות כונן) שגורמות ל"0 חיתוכים".
+function analyzeTrackEnergy(wavPath, uniqueTag) {
+    return new Promise((resolve) => {
         if (!fs.existsSync(Config.ffmpegPath)) {
-            reject(new Error("FFmpeg לא נמצא בנתיב: " + Config.ffmpegPath));
+            resolve({ levels: [], duration: 0 });
             return;
         }
-        const args = [
-            "-i", wavPath,
-            "-af", `silencedetect=noise=${thresholdDb}dB:d=${minSilenceSec}`,
-            "-f", "null", "-"
-        ];
-        execFile(Config.ffmpegPath, args, (execErr, stdout, stderr) => {
+
+        const samplesPerWindow = Math.round(ENERGY_SAMPLE_RATE * (ENERGY_WINDOW_MS / 1000));
+        const filter = `aresample=${ENERGY_SAMPLE_RATE},highpass=f=80,asetnsamples=n=${samplesPerWindow},astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level`;
+
+        const args = ["-i", wavPath, "-af", filter, "-f", "null", "-"];
+
+        execFile(Config.ffmpegPath, args, { maxBuffer: 1024 * 1024 * 64 }, (execErr, stdout, stderr) => {
             const out = (stdout || "") + (stderr || "");
 
             let duration = 0;
@@ -324,33 +340,117 @@ function analyzeTrackSilence(wavPath, thresholdDb, minSilenceSec) {
                 duration = parseInt(mDur[1], 10) * 3600 + parseInt(mDur[2], 10) * 60 + parseFloat(mDur[3]);
             }
 
-            const silences = [];
+            const levels = [];
             const lines = out.split("\n");
-            let currentStart = null;
+            let pendingTime = null;
             for (let i = 0; i < lines.length; i++) {
-                const mStart = lines[i].match(/silence_start:\s+([\d.]+)/);
-                if (mStart) currentStart = parseFloat(mStart[1]);
-
-                const mEnd = lines[i].match(/silence_end:\s+([\d.]+)/);
-                if (mEnd && currentStart !== null) {
-                    silences.push({ start: currentStart, end: parseFloat(mEnd[1]) });
-                    currentStart = null;
+                const mTime = lines[i].match(/pts_time:([\d.]+)/);
+                if (mTime) { pendingTime = parseFloat(mTime[1]); continue; }
+                const mLvl = lines[i].match(/RMS_level=(-?[\d.]+|-?inf|nan)/i);
+                if (mLvl && pendingTime !== null) {
+                    let val = parseFloat(mLvl[1]);
+                    if (isNaN(val)) val = -100; // "-inf"/"nan" = שקט דיגיטלי מוחלט
+                    levels.push({ t: pendingTime, db: val });
+                    pendingTime = null;
                 }
             }
-            if (currentStart !== null && duration > currentStart) {
-                silences.push({ start: currentStart, end: duration });
-            }
 
-            resolve({ silences, duration });
+            resolve({ levels, duration });
         });
     });
 }
 
-function isSilentAt(time, silenceArray) {
-    for (let i = 0; i < silenceArray.length; i++) {
-        if (time >= silenceArray[i].start && time <= silenceArray[i].end) return true;
+// בונה מפת "מי על המצלמה" לאורך זמן, על בסיס השוואת עוצמה בין כל הדוברים + היסטרזיס.
+// היסטרזיס = מתמודד צריך להיות חזק יותר במרווח בטוח (MARGIN_DB) ולהחזיק מעמד (CHALLENGER_HOLD_MS)
+// לפני שהמצלמה עוברת אליו. זה מונע קאטים עצבניים מ"מממ", צחוק קצר, או בליד מיקרופון.
+function buildActiveSpeakerTimeline(speakers, masterVidTrack, floorDb, silenceHoldMs, marginDb, holdMs) {
+    const windowSec = ENERGY_WINDOW_MS / 1000.0;
+    const maxDuration = Math.max.apply(null, speakers.map(s => s.duration || 0));
+    const totalWindows = Math.ceil(maxDuration / windowSec);
+
+    function levelAt(spk, winIdx) {
+        const targetT = winIdx * windowSec;
+        if (spk.levels[winIdx] && Math.abs(spk.levels[winIdx].t - targetT) < windowSec) {
+            return spk.levels[winIdx].db;
+        }
+        for (let i = 0; i < spk.levels.length; i++) {
+            if (Math.abs(spk.levels[i].t - targetT) < windowSec) return spk.levels[i].db;
+        }
+        return -100;
     }
-    return false;
+
+    const initialTrack = (masterVidTrack !== null) ? masterVidTrack : speakers[0].videoTrack;
+    let currentTrack = initialTrack;
+    let currentHolderIdx = -1; // -1 = על מצלמת ברירת מחדל/מאסטר, לא דובר ספציפי כרגע
+    let challengerIdx = -1;
+    let challengerStreakMs = 0;
+    let silenceStreakMs = 0;
+
+    const segments = [];
+    let segStart = 0;
+
+    function pushSegment(endTime) {
+        if (endTime - segStart < 0.001) return;
+        if (segments.length > 0 && segments[segments.length - 1].activeVidTrack === currentTrack) {
+            segments[segments.length - 1].end = endTime;
+        } else {
+            segments.push({ start: segStart, end: endTime, activeVidTrack: currentTrack });
+        }
+        segStart = endTime;
+    }
+
+    for (let w = 0; w < totalWindows; w++) {
+        const t = w * windowSec;
+
+        let bestIdx = -1, bestDb = -100;
+        for (let i = 0; i < speakers.length; i++) {
+            const db = levelAt(speakers[i], w);
+            if (db > bestDb) { bestDb = db; bestIdx = i; }
+        }
+        const someoneTalking = bestIdx !== -1 && bestDb > floorDb;
+
+        if (!someoneTalking) {
+            silenceStreakMs += ENERGY_WINDOW_MS;
+            challengerStreakMs = 0;
+            challengerIdx = -1;
+            if (masterVidTrack !== null && silenceStreakMs >= silenceHoldMs && currentTrack !== masterVidTrack) {
+                pushSegment(t);
+                currentTrack = masterVidTrack;
+                currentHolderIdx = -1;
+            }
+            // בלי מאסטר - נשארים על המצלמה האחרונה גם בשקט קצר, כדי לא לרפרר
+        } else {
+            silenceStreakMs = 0;
+            const candidateVid = speakers[bestIdx].videoTrack;
+
+            if (candidateVid === currentTrack) {
+                challengerStreakMs = 0;
+                challengerIdx = -1;
+                currentHolderIdx = bestIdx;
+            } else {
+                if (bestIdx === challengerIdx) {
+                    challengerStreakMs += ENERGY_WINDOW_MS;
+                } else {
+                    challengerIdx = bestIdx;
+                    challengerStreakMs = ENERGY_WINDOW_MS;
+                }
+
+                const currentHolderDb = (currentHolderIdx >= 0) ? levelAt(speakers[currentHolderIdx], w) : floorDb;
+                const strongEnough = (currentHolderIdx === -1) || ((bestDb - currentHolderDb) >= marginDb);
+
+                if (challengerStreakMs >= holdMs && strongEnough) {
+                    pushSegment(t);
+                    currentTrack = candidateVid;
+                    currentHolderIdx = bestIdx;
+                    challengerIdx = -1;
+                    challengerStreakMs = 0;
+                }
+            }
+        }
+    }
+
+    pushSegment(maxDuration);
+    return segments;
 }
 
 let podcastBusy = false;
@@ -388,6 +488,8 @@ async function runPodcastDirector() {
         const minSilenceMs = parseFloat($("podMinSilence").value);
         const minSilenceSec = minSilenceMs / 1000.0;
         const minShotDuration = parseFloat($("podMinShot").value);
+        const marginDb = parseFloat($("podMarginDb").value);
+        const holdMs = parseFloat($("podHoldMs").value);
 
         if (speakerCount < 2 || speakerCount > 4) {
             throw new Error("נתמכים בין 2 ל-4 משתתפים בלבד");
@@ -419,57 +521,25 @@ async function runPodcastDirector() {
                 throw new Error(`ייצוא אודיו לדובר ${i + 1} נכשל: ${exportRes ? exportRes.error : exportResRaw}`);
             }
 
-            setProgress(`מנתח שקט - דובר ${i + 1}...`, (i / speakers.length) * 40 + 10);
-            const analysis = await analyzeTrackSilence(wavPath, threshold, minSilenceSec);
-            spk.silences = analysis.silences;
+            setProgress(`מנתח עוצמת קול - דובר ${i + 1}...`, (i / speakers.length) * 40 + 10);
+            const analysis = await analyzeTrackEnergy(wavPath, `spk${i + 1}_${uniqueID}`);
+            spk.levels = analysis.levels;
             spk.duration = analysis.duration;
+
+            if (!spk.levels || spk.levels.length === 0) {
+                throw new Error(`ניתוח עוצמת קול לדובר ${i + 1} לא החזיר נתונים - בדוק את נתיב FFmpeg (${Config.ffmpegPath})`);
+            }
 
             try { fs.unlinkSync(wavPath); } catch (e) {}
         }
 
-        // --- שלב 2: בניית ציר זמן אירועים משותף (כל תחילות/סופי שקט + משכי הטראקים) ---
+        // --- שלב 2+3: בניית מפת חיתוכים לפי דובר דומיננטי (השוואת עוצמה + היסטרזיס) ---
+        // threshold = "רצפת" עוצמה (dB) שמתחתיה נחשב שקט. minSilenceMs = כמה שקט רציף
+        // נדרש לפני מעבר לזווית "כולם ביחד"/מאסטר, כדי לא לקפוץ אליה על הפסקת נשימה קצרה.
         setProgress("מחשב מפת חיתוכים...", 45);
-        const events = [0];
-        speakers.forEach((spk) => {
-            if (spk.duration > 0 && events.indexOf(spk.duration) === -1) events.push(spk.duration);
-            spk.silences.forEach((s) => {
-                if (events.indexOf(s.start) === -1) events.push(s.start);
-                if (events.indexOf(s.end) === -1) events.push(s.end);
-            });
-        });
-        events.sort((a, b) => a - b);
+        const cutsMap = buildActiveSpeakerTimeline(speakers, masterVidTrack, threshold, minSilenceMs, marginDb, holdMs);
 
-        // --- שלב 3: קביעת מצלמה פעילה לכל קטע זמן ---
-        // דובר יחיד מדבר -> המצלמה שלו. אף אחד/כמה דוברים ביחד -> זווית "כולם ביחד" אם קיימת, אחרת נשארים על המצלמה האחרונה.
-        const cutsMap = [];
-        let lastCamera = (masterVidTrack !== null) ? masterVidTrack : speakers[0].videoTrack;
-
-        for (let i = 0; i < events.length - 1; i++) {
-            const chunkStart = events[i];
-            const chunkEnd = events[i + 1];
-            if (chunkEnd - chunkStart < 0.05) continue;
-
-            const midPoint = (chunkStart + chunkEnd) / 2.0;
-            const activeSpeakers = speakers.filter((spk) => !isSilentAt(midPoint, spk.silences));
-
-            let chosenVidTrack;
-            if (activeSpeakers.length === 1) {
-                chosenVidTrack = activeSpeakers[0].videoTrack;
-            } else {
-                // 0 דוברים או כמה דוברים בו-זמנית
-                chosenVidTrack = (masterVidTrack !== null) ? masterVidTrack : lastCamera;
-            }
-
-            lastCamera = chosenVidTrack;
-
-            if (cutsMap.length > 0 && cutsMap[cutsMap.length - 1].activeVidTrack === chosenVidTrack) {
-                cutsMap[cutsMap.length - 1].end = chunkEnd;
-            } else {
-                cutsMap.push({ start: chunkStart, end: chunkEnd, activeVidTrack: chosenVidTrack });
-            }
-        }
-
-        // --- שלב 4: מעבר החלקה - מיזוג שוטים קצרים מדי כדי למנוע קאטים עצבניים ---
+        // --- שלב 4: מעבר החלקה - מיזוג שוטים קצרים מדי שעדיין נשארו (רשת ביטחון אחרונה) ---
         setProgress("מחליק חיתוכים קצרים מדי...", 70);
         let needsAnotherPass = true;
         while (needsAnotherPass) {

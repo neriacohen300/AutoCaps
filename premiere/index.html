@@ -136,16 +136,36 @@
                     <div class="section-title">הגדרות זיהוי דיבור וקאטים</div>
                     <div class="field-row">
                         <div class="field-group">
-                            <label for="podThreshold">עוצמת רעש (dB)</label>
+                            <label for="podThreshold">רגישות זיהוי קול (dB)
+                                <span class="info-icon" tabindex="0" title="כל קול מתחת לערך הזה נחשב שקט. ערך גבוה יותר (למשל 25-) = פחות רגיש לרעשי רקע ומזגן. ערך נמוך יותר (למשל 45-) = תופס גם לחישות.">i</span>
+                            </label>
                             <input type="number" id="podThreshold" value="-30" max="-10">
                         </div>
                         <div class="field-group">
-                            <label for="podMinSilence">אורך שקט מינימלי (ms)</label>
+                            <label for="podMinSilence">זמן שקט למעבר למאסטר (ms)
+                                <span class="info-icon" tabindex="0" title="כמה זמן שקט רציף (במילישניות) נדרש לפני מעבר אוטומטי לזווית 'כולם ביחד', אם הוגדרה. בלי מאסטר - שדה זה לא משפיע.">i</span>
+                            </label>
                             <input type="number" id="podMinSilence" value="500" min="100">
                         </div>
                     </div>
+                    <div class="field-row">
+                        <div class="field-group">
+                            <label for="podMarginDb">רף החלפת מצלמה (dB)
+                                <span class="info-icon" tabindex="0" title="כמה חזק יותר (בדציבלים) דובר חדש צריך להיות מהדובר הנוכחי כדי 'לגנוב' את המצלמה. ערך גבוה יותר = פחות קפיצות שווא מרעש רקע/בליד מיקרופון בין הדוברים.">i</span>
+                            </label>
+                            <input type="number" id="podMarginDb" value="4" min="0" step="0.5">
+                        </div>
+                        <div class="field-group">
+                            <label for="podHoldMs">זמן החזקה לפני קאט (ms)
+                                <span class="info-icon" tabindex="0" title="כמה זמן (במילישניות) דובר חדש צריך להישאר דומיננטי ברציפות לפני שהמצלמה בפועל עוברת אליו. ערך גבוה יותר = פחות קאטים עצבניים אך תגובה איטית יותר למעברים אמיתיים.">i</span>
+                            </label>
+                            <input type="number" id="podHoldMs" value="300" min="0" step="50">
+                        </div>
+                    </div>
                     <div class="field-group">
-                        <label for="podMinShot">אורך שוט מינימלי (שניות)</label>
+                        <label for="podMinShot">אורך שוט מינימלי (שניות)
+                            <span class="info-icon" tabindex="0" title="רשת ביטחון אחרונה: כל שוט שיוצא קצר מהערך הזה יתמזג אוטומטית עם השוט השכן שלו, כדי למנוע קאטים קצרים מדי.">i</span>
+                        </label>
                         <input type="number" id="podMinShot" value="1.2" min="0.2" step="0.1">
                     </div>
                 </div>

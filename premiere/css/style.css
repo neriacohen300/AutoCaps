@@ -99,6 +99,37 @@ label {
     font-size: 11px;
     font-weight: 500;
     color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+/* אייקון "i" למידע נוסף/טולטיפ ליד תוויות הגדרה */
+.info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background-color: var(--bg-input);
+    border: 1px solid var(--text-secondary);
+    color: var(--text-secondary);
+    font-size: 9px;
+    font-weight: 700;
+    font-style: normal;
+    font-family: Georgia, serif;
+    cursor: help;
+    user-select: none;
+    flex-shrink: 0;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.info-icon:hover,
+.info-icon:focus {
+    color: var(--focus-outline);
+    border-color: var(--focus-outline);
+    outline: none;
 }
 
 /* עיצוב תיבות בחירה וקלט מספרי */
