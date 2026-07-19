@@ -61,6 +61,7 @@ CUDA Setup:
 import argparse
 import json
 import os
+import re
 import sys
 import textwrap
 import time
@@ -208,6 +209,106 @@ def _chunk_lines(lines: list[str], max_lines: int | None) -> list[list[str]]:
 _SENTENCE_END_CHARS = set(".?!:;׃…")  # includes Hebrew sof-pasuq (׃) and ellipsis
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Hebrew / bidi text sanitizer
+#
+# Premiere Pro's caption renderer doesn't run a full Unicode bidi algorithm on
+# RTL text, so a few things reliably break:
+#   1. Sentence-ending punctuation (. ? ! : ; …) at the end of a Hebrew line
+#      sometimes gets thrown to the wrong (left) side of the screen.
+#   2. An embedded English word/number in a Hebrew sentence (e.g. a product
+#      name) can invert the reading order of the surrounding Hebrew words.
+#   3. Straight ASCII quotes used for Hebrew acronyms (e.g. צה"ל, ד"ר) are
+#      ambiguous punctuation glyphs and can confuse line-wrapping / bidi
+#      resolution; they should be the proper Hebrew gershayim (״) / geresh (׳)
+#      characters instead.
+#
+# This sanitizer fixes all three by injecting invisible Unicode control
+# characters (RLM / directional isolates) and normalizing acronym punctuation.
+# It is applied once, on the final wrapped display lines, right before they
+# are written into the .srt file — after word/char wrapping so it can't skew
+# any wrap-width decisions.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_RLM = "\u200f"  # Right-to-Left Mark — gives a neutral char strong RTL direction
+_LRI = "\u2066"  # Left-to-Right Isolate
+_PDI = "\u2069"  # Pop Directional Isolate
+
+_HEBREW_RANGE = "\u0590-\u05FF\uFB1D-\uFB4F"
+_HEBREW_CHAR_RE = re.compile(f"[{_HEBREW_RANGE}]")
+
+# A contiguous run of Latin letters/digits (plus common "glued" symbols like
+# . _ - / @ : + #) that starts and ends on an alnum char, e.g. "GitHub",
+# "v3-turbo", "GPT-4". Runs are matched individually (no spaces) so that
+# "New York" is isolated as two words, each staying internally LTR without
+# swallowing the Hebrew around it.
+_LATIN_RUN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._\-/@:+#]*[A-Za-z0-9])?")
+
+# Trailing run of sentence punctuation at the very end of the line.
+_TRAILING_PUNCT_RE = re.compile(r'([.?!:;׃…,]+)\s*$')
+
+# ASCII quote/apostrophe sitting between two Hebrew letters == acronym marker
+# (e.g. צה"ל, ד"ר, רח' = an abbreviation, not a quotation).
+_GERSHAYIM_RE = re.compile(f'([{_HEBREW_RANGE}])"([{_HEBREW_RANGE}])')
+# Geresh after a Hebrew letter, either mid-word (רח'ל) or at a word boundary
+# like the end of an abbreviation (רח' = "street"), but not a real quote
+# (i.e. not followed by more free-standing text before the next quote).
+_GERESH_RE = re.compile(f"([{_HEBREW_RANGE}])'(?=[{_HEBREW_RANGE}]|\\B|$)")
+
+
+def _fix_hebrew_acronym_quotes(text: str) -> str:
+    """
+    Replace straight ASCII quotes/apostrophes used inside Hebrew acronyms
+    (צה"ל, ד"ר, רח') with the correct Hebrew gershayim (״) / geresh (׳)
+    punctuation, so they read as part of the word instead of as a quote
+    delimiter and don't break line-wrapping.
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        text = _GERSHAYIM_RE.sub("\\1\u05F4\\2", text)
+        text = _GERESH_RE.sub("\\1\u05F3", text)
+    return text
+
+
+def _isolate_embedded_latin(text: str) -> str:
+    """
+    Wrap runs of embedded Latin letters/digits (English words, product
+    names, version numbers, acronyms like GitHub) in Unicode directional
+    isolates (LRI ... PDI) so Premiere keeps them as a contained
+    left-to-right island and does not reorder the surrounding Hebrew words.
+    """
+    if not _HEBREW_CHAR_RE.search(text):
+        return text  # pure English/numeric line — nothing to isolate against
+    return _LATIN_RUN_RE.sub(lambda m: f"{_LRI}{m.group(0)}{_PDI}", text)
+
+
+def _lock_trailing_punctuation(text: str) -> str:
+    """
+    Insert an RLM immediately before trailing sentence-ending punctuation
+    on a Hebrew line so the punctuation (which is direction-neutral on its
+    own) inherits strong RTL direction from the preceding Hebrew and stays
+    anchored at the correct (visual) end of the line instead of flipping
+    to the wrong side.
+    """
+    if not _HEBREW_CHAR_RE.search(text):
+        return text
+    return _TRAILING_PUNCT_RE.sub(lambda m: _RLM + m.group(1), text)
+
+
+def sanitize_rtl_text(text: str) -> str:
+    """
+    Run the full Hebrew/bidi cleanup pipeline on one display line before it
+    is written into the SRT file.
+    """
+    if not text:
+        return text
+    text = _fix_hebrew_acronym_quotes(text)
+    text = _isolate_embedded_latin(text)
+    text = _lock_trailing_punctuation(text)
+    return text
+
+
 def _flatten_words(segment) -> list[dict]:
     """
     Pull per-word timestamps out of a faster-whisper segment. Falls back to
@@ -344,7 +445,7 @@ def _entry_to_srt_blocks(
     line_chunks = _chunk_lines(lines, max_lines_per_subtitle)
 
     if len(line_chunks) == 1:
-        block_text = "\n".join(line_chunks[0])
+        block_text = "\n".join(sanitize_rtl_text(l) for l in line_chunks[0])
         return [f"{_format_timestamp(start)} --> {_format_timestamp(end)}\n{block_text}"]
 
     # Split the entry's time range across chunks, proportional to each
@@ -359,7 +460,7 @@ def _entry_to_srt_blocks(
     for i, (chunk, char_count) in enumerate(zip(line_chunks, chunk_char_counts)):
         is_last = i == len(line_chunks) - 1
         chunk_end = end if is_last else cursor + duration * (char_count / total_chars)
-        block_text = "\n".join(chunk)
+        block_text = "\n".join(sanitize_rtl_text(l) for l in chunk)
         blocks.append(f"{_format_timestamp(cursor)} --> {_format_timestamp(chunk_end)}\n{block_text}")
         cursor = chunk_end
     return blocks
