@@ -1,5 +1,6 @@
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
+const https = require('https');
 
 const csInterface = new CSInterface();
 const btnExport = document.getElementById('btnExport');
@@ -43,6 +44,9 @@ btnExport.addEventListener('click', async () => {
     const statusSilence = document.getElementById('statusSilence');
     // קריאת המצב של תיבת הסימון החדשה
     const removePunctuation = document.getElementById('removePunctuation').checked;
+    // קריאת מילון המונחים המותאם אישית ושמירתו לדיסק לפעם הבאה
+    const customVocabulary = document.getElementById('customVocabulary') ? document.getElementById('customVocabulary').value.trim() : "";
+    saveCustomVocabulary();
 
     const audioOutPath = path.join(Config.tempDir, `autocaps_audio_${Date.now()}.wav`);
     const srtOutPath = path.join(Config.tempDir, `autocaps_subs_${Date.now()}.srt`);
@@ -72,8 +76,8 @@ btnExport.addEventListener('click', async () => {
         waitForFile(audioOutPath, 60000, () => {
             log("WAV file ready, size: " + fs.statSync(audioOutPath).size);
             statusDiv.innerText = "מתמלל... (אנא המתן)";
-            // העברת removePunctuation כפרמטר נוסף
-            runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device, range, removePunctuation);
+            // העברת removePunctuation וה-customVocabulary כפרמטרים נוספים
+            runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device, range, removePunctuation, customVocabulary);
         }, () => {
             log("WAV file never appeared!");
             statusDiv.innerText = "שגיאה: קובץ WAV לא נוצר";
@@ -82,7 +86,7 @@ btnExport.addEventListener('click', async () => {
     });
 });
 
-function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device, range, removePunctuation) {
+function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device, range, removePunctuation, customVocabulary) {
     const args = [
         audioPath, srtPath,
         "--language", language,
@@ -96,6 +100,11 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
     // אם המשתמש סימן את התיבה, נוסיף את דגל הסרת סימני הפיסוק לארגומנטים של ה-EXE
     if (removePunctuation) {
         args.push("--remove-punctuation");
+    }
+
+    // אם המשתמש הזין מילון מונחים מותאם אישית, נעביר אותו כ-prompt למודל התמלול
+    if (customVocabulary) {
+        args.push("--custom-vocabulary", customVocabulary);
     }
 
     log("EXE path: " + Config.exePath);
@@ -665,4 +674,138 @@ function handleZoomResult(res) {
     } catch (e) {
         statusZoom.innerText = "שגיאה לא ידועה.";
     }
+}
+
+// =========================================================================
+// בדיקת גרסה ועדכונים אוטומטית מ-GitHub
+// =========================================================================
+
+const versionTag = document.getElementById('versionTag');
+const updateBanner = document.getElementById('updateBanner');
+const updateBannerText = document.getElementById('updateBannerText');
+const btnUpdateDownload = document.getElementById('btnUpdateDownload');
+
+if (versionTag) {
+    versionTag.innerText = "v" + Config.version;
+}
+
+// השוואת שתי גרסאות בפורמט semver (למשל "1.2.0" מול "1.10.0")
+// מחזיר true אם remoteVersion חדשה יותר מ-localVersion
+function isNewerVersion(remoteVersion, localVersion) {
+    const clean = (v) => v.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+    const remote = clean(remoteVersion);
+    const local = clean(localVersion);
+    const len = Math.max(remote.length, local.length);
+    for (let i = 0; i < len; i++) {
+        const r = remote[i] || 0;
+        const l = local[i] || 0;
+        if (r > l) return true;
+        if (r < l) return false;
+    }
+    return false;
+}
+
+function openExternalUrl(url) {
+    try {
+        // הדרך המומלצת ב-CEP לפתיחת קישור בדפדפן ברירת המחדל
+        if (csInterface && csInterface.openURLInDefaultBrowser) {
+            csInterface.openURLInDefaultBrowser(url);
+        } else {
+            require('electron').shell.openExternal(url);
+        }
+    } catch (e) {
+        log("Failed to open URL: " + e.message);
+    }
+}
+
+function checkForUpdates() {
+    if (!Config.githubOwner || !Config.githubRepo) return;
+
+    const options = {
+        hostname: 'api.github.com',
+        path: `/repos/${Config.githubOwner}/${Config.githubRepo}/releases/latest`,
+        method: 'GET',
+        headers: {
+            'User-Agent': 'AutoCaps-Extension',
+            'Accept': 'application/vnd.github+json'
+        },
+        timeout: 8000
+    };
+
+    const req = https.request(options, (res) => {
+        let body = '';
+        res.on('data', (chunk) => body += chunk);
+        res.on('end', () => {
+            try {
+                if (res.statusCode !== 200) {
+                    log("Update check: GitHub API returned status " + res.statusCode);
+                    return;
+                }
+                const release = JSON.parse(body);
+                const latestVersion = release.tag_name || release.name;
+                const releaseUrl = release.html_url || `https://github.com/${Config.githubOwner}/${Config.githubRepo}/releases/latest`;
+
+                if (latestVersion && isNewerVersion(latestVersion, Config.version)) {
+                    showUpdateBanner(latestVersion, releaseUrl);
+                }
+            } catch (e) {
+                log("Update check parse error: " + e.message);
+            }
+        });
+    });
+
+    req.on('error', (e) => log("Update check failed: " + e.message));
+    req.on('timeout', () => req.destroy());
+    req.end();
+}
+
+function showUpdateBanner(latestVersion, releaseUrl) {
+    if (!updateBanner) return;
+    updateBannerText.innerText = `קיימת גרסה חדשה של AutoCaps (${latestVersion.replace(/^v/i, '')})! הגרסה שלכם: ${Config.version}`;
+    updateBanner.classList.remove('hidden');
+    btnUpdateDownload.onclick = () => openExternalUrl(releaseUrl);
+}
+
+// בדיקת עדכונים בעת פתיחת הפאנל
+checkForUpdates();
+
+
+// =========================================================================
+// מילון מונחים מותאם אישית (Custom Vocabulary) לתמלול
+// =========================================================================
+
+const customVocabularyField = document.getElementById('customVocabulary');
+
+// טעינת המילון השמור מהדיסק, אם קיים
+function loadCustomVocabulary() {
+    if (!customVocabularyField) return;
+    try {
+        if (fs.existsSync(Config.vocabularyPath)) {
+            const raw = fs.readFileSync(Config.vocabularyPath, 'utf-8');
+            const data = JSON.parse(raw);
+            customVocabularyField.value = data.text || "";
+        }
+    } catch (e) {
+        log("Failed to load custom vocabulary: " + e.message);
+    }
+}
+
+// שמירת המילון לדיסק כדי שיישאר בין הפעלות
+function saveCustomVocabulary() {
+    if (!customVocabularyField) return;
+    try {
+        const dir = path.dirname(Config.vocabularyPath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(Config.vocabularyPath, JSON.stringify({ text: customVocabularyField.value }, null, 2), 'utf-8');
+    } catch (e) {
+        log("Failed to save custom vocabulary: " + e.message);
+    }
+}
+
+if (customVocabularyField) {
+    loadCustomVocabulary();
+    // שמירה אוטומטית בכל פעם שהמשתמש עוזב את השדה
+    customVocabularyField.addEventListener('blur', saveCustomVocabulary);
 }

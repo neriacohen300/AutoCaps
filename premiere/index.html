@@ -8,8 +8,13 @@
 <body>
     <div class="container">
         <div class="header">
-            <h2>AutoCaps</h2>
+            <h2>AutoCaps <span id="versionTag" class="version-tag"></span></h2>
             <span class="subtitle">תמלול וכתוביות אוטומטיות</span>
+        </div>
+
+        <div id="updateBanner" class="update-banner hidden">
+            <span id="updateBannerText">קיימת גרסה חדשה של AutoCaps!</span>
+            <button id="btnUpdateDownload" class="update-download-btn">הורדה מ-GitHub</button>
         </div>
         
         <details class="collapsible-group" open>
@@ -51,6 +56,12 @@
                         <span class="custom-checkbox"></span>
                         <span class="checkbox-text">הסרת סימני פיסוק (מראה נקי)</span>
                     </label>
+                    <div class="field-group">
+                        <label for="customVocabulary">מילון מונחים מותאם אישית
+                            <span class="info-icon" tabindex="0" title="הוסיפו שמות, מונחים מקצועיים, ראשי תיבות או מילים לא נפוצות, מופרדות בפסיק. זה עוזר למודל התמלול לזהות אותן נכון. הרשימה נשמרת אוטומטית.">i</span>
+                        </label>
+                        <textarea id="customVocabulary" rows="3" placeholder="לדוגמה: AutoCaps, ivrit-ai, פרימייר פרו"></textarea>
+                    </div>
                 </div>
 
                 <div class="section">

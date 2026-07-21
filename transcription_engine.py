@@ -483,6 +483,7 @@ def transcribe(
     cue_gap_sec: float,
     min_cue_duration: float,
     remove_punctuation: bool, # פרמטר חדש שהתווסף
+    custom_vocabulary: str | None = None, # מילון מונחים מותאם אישית (שמות, מונחים מקצועיים וכו')
 ) -> None:
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -520,6 +521,16 @@ def transcribe(
     _emit({"event": "transcribing"})
     _log(f"Transcribing   : {audio_path}")
 
+    # בניית initial_prompt ממילון המונחים המותאם אישית (אם סופק).
+    # Whisper משתמש ב-prompt הזה כ"רמז הקשר" כדי להטות את הזיהוי לכיוון
+    # המונחים/שמות שהמשתמש ציין, מבלי לשנות בפועל את הטקסט המתומלל.
+    initial_prompt = None
+    if custom_vocabulary:
+        terms = [t.strip() for t in custom_vocabulary.split(",") if t.strip()]
+        if terms:
+            initial_prompt = "מילון מונחים רלוונטי: " + ", ".join(terms) + "."
+            _log(f"Custom vocabulary ({len(terms)} terms): {', '.join(terms)}")
+
     segments_iter, info = model.transcribe(
         str(audio_path),
         language=language,
@@ -527,6 +538,7 @@ def transcribe(
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
         word_timestamps=True,
+        initial_prompt=initial_prompt,
     )
     _log(
         f"Detected language: {info.language} "
@@ -665,6 +677,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # הוספת הפרמטר ל-CLI
     parser.add_argument("--remove-punctuation", action="store_true",
                         help="Remove punctuation from subtitles (e.g. periods, commas, question marks).")
+    parser.add_argument("--custom-vocabulary", default=None, metavar="TERMS",
+                        help="Comma-separated list of names/terms to bias the model towards "
+                             "(e.g. 'John Smith, ivrit-ai, AutoCaps'). Passed to the model as "
+                             "context, does not force exact spelling.")
     return parser
 
 
@@ -684,6 +700,7 @@ def main() -> None:
         cue_gap_sec=args.gap,
         min_cue_duration=args.min_duration,
         remove_punctuation=args.remove_punctuation, # העברת הפרמטר
+        custom_vocabulary=args.custom_vocabulary,
     )
 
 

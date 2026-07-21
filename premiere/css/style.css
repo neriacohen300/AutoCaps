@@ -132,6 +132,59 @@ label {
     outline: none;
 }
 
+/* תגית גרסה ליד שם התוסף בכותרת */
+.version-tag {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    letter-spacing: 0;
+}
+
+/* באנר התראה על גרסה חדשה */
+.update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background-color: rgba(20, 115, 230, 0.12);
+    border: 1px solid var(--accent-blue);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    color: var(--text-primary);
+}
+
+.update-download-btn {
+    width: auto;
+    flex-shrink: 0;
+    padding: 6px 12px;
+    font-size: 10px;
+}
+
+/* תיבת טקסט חופשי (למילון מונחים מותאם אישית וכדומה) */
+textarea {
+    background-color: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 11px;
+    outline: none;
+    resize: vertical;
+    font-family: inherit;
+    width: 100%;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+textarea:hover {
+    border-color: #4A4A4A;
+}
+
+textarea:focus {
+    border-color: var(--focus-outline);
+    box-shadow: 0 0 0 1px var(--focus-outline);
+}
+
 /* עיצוב תיבות בחירה וקלט מספרי */
 select, input[type="number"] {
     background-color: var(--bg-input);

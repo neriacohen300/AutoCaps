@@ -4,6 +4,12 @@ const os = require('os');
 const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
 
 const Config = {
+    version: "1.0.6",
+
+    // פרטי מאגר הגיטהאב לבדיקת עדכונים
+    githubOwner: "neriacohen300",
+    githubRepo: "AutoCaps",
+
     // Path to the compiled exe
     exePath: path.join(localAppData, "AutoCaps", "backend", "transcription_engine.exe"),
     
@@ -23,5 +29,8 @@ const Config = {
     ffmpegPath: path.join(localAppData, "AutoCaps", "backend", "ffmpeg.exe"),
     
     // נתיב לקובץ ה-Preset (.epr) לצורך ייצוא אודיו לפרימייר (חובה כדי ש-exportAsMediaDirect יעבוד)
-    presetPath: path.join(localAppData, "AutoCaps", "backend", "AudioExport.epr")
+    presetPath: path.join(localAppData, "AutoCaps", "backend", "AudioExport.epr"),
+
+    // נתיב לקובץ בו נשמר מילון המונחים המותאם אישית (Custom Vocabulary) של המשתמש
+    vocabularyPath: path.join(localAppData, "AutoCaps", "vocabulary.json")
 };
