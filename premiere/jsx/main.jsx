@@ -318,7 +318,11 @@ function cutSilence(intervalsJson) {
             intervals = data.intervals;
         }
 
-        var MIN_SILENCE_DURATION = 0.35; 
+        // הערה: אין כאן יותר סף מינימלי קשיח (בעבר 0.35 שניות) שהתעלם מהגדרת
+        // המשתמש "אורך שקט (ms)". הסינון לפי אורך כבר נעשה ב-FFmpeg לפי מה
+        // שהמשתמש הגדיר בממשק; כאן משאירים רק אפסילון זעיר כדי למנוע קטעי
+        // שקט באורך אפס/שלילי שנובעים משגיאות עיגול.
+        var MIN_SILENCE_DURATION = 0.03;
         var filteredIntervals = [];
         
         for (var m = 0; m < intervals.length; m++) {
@@ -404,17 +408,40 @@ function cutSilence(intervalsJson) {
                 
                 if (clipDuration <= 0) continue;
                 
+                // מרווח סובלנות קטן (בשניות) לספיגת שגיאות עיגול פריימים בהמרה
+                // בין שניות ל-ticks (זו שנעשה בה שימוש לביצוע ה-Razor) לבין
+                // הקריאה החוזרת של clip.start/clip.end (במרה ההפוכה).
+                var EPS = 0.06;
+
                 for (var i = 0; i < filteredIntervals.length; i++) {
                     var r = filteredIntervals[i];
+
+                    // הבדיקה העיקרית: מכיוון שביצענו Razor מדויק בגבולות קטע
+                    // השקט, כל קליפ שנוצר מהחיתוך אמור ליפול *כולו* בתוך קטע
+                    // השקט או *כולו* מחוצה לו. לכן בודקים אם אמצע הקליפ נמצא
+                    // בתוך קטע השקט (± סובלנות) - זו בדיקה יציבה בהרבה מאשר
+                    // אחוז חפיפה, שרגיש מדי לעיגולי פריימים על קטעים קצרים.
+                    var clipMid = (clipStart + clipEnd) / 2;
+                    var midInsideSilence = clipMid >= (r.start - EPS) && clipMid <= (r.end + EPS);
+
+                    // גיבוי: קליפ שכל טווחו כלול כמעט לגמרי בתוך קטע השקט
+                    // (למקרה שקטע השקט מכיל כמה קליפים קטנים שלא חולקו בדיוק
+                    // באמצעם).
                     var overlapStart = Math.max(clipStart, r.start);
                     var overlapEnd = Math.min(clipEnd, r.end);
                     var overlapDuration = overlapEnd - overlapStart;
-                    
-                    if (overlapDuration > 0) {
-                        if ((overlapDuration / clipDuration) > 0.4 || clipDuration <= 0.12) {
-                            try { clip.remove(true, false); } catch(e) {} 
-                            break;
+                    var mostlyInsideSilence = overlapDuration > 0 && (overlapDuration / clipDuration) > 0.4;
+
+                    if (midInsideSilence || mostlyInsideSilence || clipDuration <= 0.12) {
+                        var removed = false;
+                        try { clip.remove(true, false); removed = true; } catch(e) {}
+                        if (!removed) {
+                            try { clip.remove(true); removed = true; } catch(e) {}
                         }
+                        if (!removed) {
+                            try { clip.remove(); } catch(e) {}
+                        }
+                        break;
                     }
                 }
             }
@@ -430,6 +457,148 @@ function cutSilence(intervalsJson) {
         return '{"ok":true, "message":"החיתוכים בוצעו בהצלחה. כעת לחץ: Sequence > Close Gap"}';
     } catch (err) {
         return lcErr("exception: " + err.toString());
+    }
+}
+
+// ==========================================
+// ✂️ חיתוך שקט - גישת XML (מהיר ואמין יותר מ-Razor+Remove דרך QE)
+// במקום לחתוך ולמחוק קליפים בתוך הסיקוונס הקיים (שהתגלה כלא אמין - משאיר
+// לפעמים "שאריות" שקט קטנות בגלל אופן פעולת ה-QE API), הגישה כאן בונה
+// קובץ XML (Final Cut Pro XML) חדש לגמרי המכיל רק את הקטעים שצריך לשמור,
+// ומייבא אותו כסיקוונס חדש. Premiere בעצמו אחראי על בניית הסיקוונס מה-XML,
+// כך שאין תלות בהתנהגות לא עקבית של מחיקת קליפים.
+//
+// הערה חשובה: הגרסה הנוכחית תומכת בתרחיש הנפוץ ביותר - קליפ וידאו רציף
+// יחיד על טראק V1 (למשל עריכת "טוקינג-הד"). אם יש כמה קליפים על V1,
+// הפונקציה תשתמש רק בקליפ הראשון.
+// ==========================================
+
+// שולף מהסיקוונס הפעיל את רשימת כל הקליפים שעל טראק V1 (בכל כמות - לא רק
+// קליפ בודד), עם נקודות ה-Start/End שלהם בציר הזמן של הסיקוונס ונקודת ה-IN
+// שלהם במדיה המקורית. זה מאפשר למפות כל קטע "לשמירה" (אחרי חיתוך השקט)
+// לקובץ המקור הנכון ולזמן הנכון בתוכו, גם כשיש כמה קליפים/קבצים על הטראק.
+function getSequenceClipsInfo() {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return lcErr("no_sequence");
+        if (seq.videoTracks.numTracks === 0) return lcErr("no_video_tracks");
+
+        var vTrack = seq.videoTracks[0];
+        if (!vTrack || vTrack.clips.numItems === 0) return lcErr("no_clips_on_v1");
+
+        var TICKS_PER_SECOND = 254016000000;
+        var tpf = 10160640000;
+        try {
+            if (seq.videoFrameRate && seq.videoFrameRate.ticks) {
+                var parsedTpf = parseInt(seq.videoFrameRate.ticks, 10);
+                if (parsedTpf > 0) tpf = parsedTpf;
+            }
+        } catch (eTpf) {}
+        var fps = TICKS_PER_SECOND / tpf;
+
+        var width = 1920, height = 1080;
+        try {
+            if (seq.frameSizeHorizontal) width = parseInt(seq.frameSizeHorizontal, 10);
+            if (seq.frameSizeVertical) height = parseInt(seq.frameSizeVertical, 10);
+        } catch (eSize) {}
+
+        var clipsArr = [];
+        for (var c = 0; c < vTrack.clips.numItems; c++) {
+            var clip = vTrack.clips[c];
+            if (!clip) continue;
+
+            var projectItem = clip.projectItem;
+            if (!projectItem) continue;
+
+            var mediaPath = "";
+            try { mediaPath = projectItem.getMediaPath(); } catch (eMp) {}
+            if (!mediaPath) continue; // מדלגים על קליפי גרפיקה/צבע ללא קובץ מקור אמיתי
+
+            var seqStart = parseInt(clip.start.ticks, 10) / TICKS_PER_SECOND;
+            var seqEnd = parseInt(clip.end.ticks, 10) / TICKS_PER_SECOND;
+            var sourceIn = parseInt(clip.inPoint.ticks, 10) / TICKS_PER_SECOND;
+
+            clipsArr.push(
+                '{"mediaPath":"' + lcEsc(mediaPath) + '"' +
+                ',"name":"' + lcEsc(projectItem.name) + '"' +
+                ',"seqStart":' + seqStart +
+                ',"seqEnd":' + seqEnd +
+                ',"sourceIn":' + sourceIn +
+                '}'
+            );
+        }
+
+        if (clipsArr.length === 0) return lcErr("no_usable_clips_on_v1");
+
+        var json = '{"ok":true' +
+            ',"fps":' + fps +
+            ',"width":' + width +
+            ',"height":' + height +
+            ',"clips":[' + clipsArr.join(",") + ']' +
+            '}';
+        return json;
+    } catch (e) {
+        return lcErr("exception: " + e.toString());
+    }
+}
+
+// מייבא קובץ XML (שנבנה ב-main.js) כסיקוונס חדש לתוך הפרויקט, ומפעיל אותו
+// כטיימליין הפעיל (כאילו לחצו עליו פעמיים בבין הפרויקטים) - כולל ניסיון
+// לפתוח אותו בפועל בפאנל הטיימליין, לא רק לסמן אותו כ"פעיל" ברקע.
+function importXmlAsNewSequence(xmlPath) {
+    try {
+        var xmlFile = new File(xmlPath);
+        if (!xmlFile.exists) return lcErr("xml_not_found");
+
+        var autoCapsFolder = getOrCreateAutoCapsFolder();
+        if (!autoCapsFolder) return lcErr("cant_create_folder");
+
+        var beforeIds = {};
+        var beforeCount = app.project.sequences.numSequences;
+        for (var s = 0; s < beforeCount; s++) {
+            beforeIds[app.project.sequences[s].sequenceID] = true;
+        }
+
+        var imported = app.project.importFiles([xmlFile.fsName], true, autoCapsFolder, false);
+        if (!imported) return lcErr("import_failed");
+
+        if (app.project.sequences.numSequences <= beforeCount) {
+            return lcErr("sequence_not_registered_after_import");
+        }
+
+        // מזהים את הסיקוונס החדש לפי מזהה (sequenceID) שלא היה קיים לפני
+        // הייבוא - ולא לפי הנחה ש"החדש הוא תמיד האחרון במערך", שגרמה לזיהוי
+        // שגוי כשהיה כבר סיקוונס אחר פתוח בפרויקט.
+        var newSeq = null;
+        for (var s2 = 0; s2 < app.project.sequences.numSequences; s2++) {
+            var candidate = app.project.sequences[s2];
+            if (!beforeIds[candidate.sequenceID]) {
+                newSeq = candidate;
+                break;
+            }
+        }
+        if (!newSeq) return lcErr("cant_identify_new_sequence");
+
+        // ניסיון בפועל לפתוח את הסיקוונס בפאנל הטיימליין (לא רק להגדיר כפעיל
+        // ברקע - openSequence הוא זה שבפועל "מקפיץ" אותו על המסך).
+        var openedInPanel = false;
+        try {
+            if (typeof app.project.openSequence === "function") {
+                try {
+                    openedInPanel = !!app.project.openSequence(newSeq.sequenceID);
+                } catch (eOpenA) {
+                    try {
+                        openedInPanel = !!app.project.openSequence({ sequenceID: newSeq.sequenceID });
+                    } catch (eOpenB) {}
+                }
+            }
+        } catch (eOpen) {}
+
+        try { app.project.activeSequence = newSeq; } catch (eActive) {}
+
+        return '{"ok":true, "sequenceName":"' + lcEsc(newSeq.name) + '", "openedInPanel":' + (openedInPanel ? "true" : "false") + '}';
+    } catch (e) {
+        return lcErr("exception: " + e.toString());
     }
 }
 

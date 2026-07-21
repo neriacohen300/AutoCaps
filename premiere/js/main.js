@@ -213,17 +213,15 @@ function detectSilence(wavPath, outJsonPath, threshold, durationMs, padMs) {
 }
 
 // מאזין ללחיצה על כפתור חיתוך שקט
+// הגישה: מייצאים אודיו -> מזהים שקט -> הופכים את קטעי השקט לקטעי "שמירה"
+// -> בונים XML חדש שמכיל רק את הקטעים האלה -> מייבאים אותו כסיקוונס חדש.
 btnCutSilence.addEventListener('click', () => {
     btnCutSilence.disabled = true;
     statusSilence.innerText = "מייצא אודיו לבדיקה...";
-    
-    // נייצר קובץ אודיו ייעודי בתיקיית ה-Temp
+
     const wavPath = path.join(Config.tempDir, `silence_scan_${Date.now()}.wav`);
-    
-    // אנו נשתמש בפונקציה הקיימת ב-JSX לייצוא (חובה קובץ Preset)
-    // שים לב ש-exportAudioForTranscription כבר קיימת אצלך בקוד (כמו שרואים מה-metadata של הקובץ)
     const exportScript = `exportAudioForTranscription("${wavPath.replace(/\\/g, '\\\\')}", "entire", "${Config.presetPath.replace(/\\/g, '\\\\')}")`;
-    
+
     csInterface.evalScript(exportScript, async (exportRes) => {
         if (exportRes !== "SUCCESS") {
             statusSilence.innerText = "שגיאה בייצוא האודיו: " + exportRes;
@@ -231,40 +229,353 @@ btnCutSilence.addEventListener('click', () => {
             return;
         }
 
-        statusSilence.innerText = "מנתח גלי קול (מאתר שקט)...";
         try {
+            statusSilence.innerText = "מנתח גלי קול (מאתר שקט)...";
             const threshold = parseFloat(document.getElementById('silThreshold').value);
             const duration = parseFloat(document.getElementById('silDuration').value);
             const pad = parseFloat(document.getElementById('silPad').value);
             const jsonPath = path.join(Config.tempDir, `silence_${Date.now()}.json`);
-            
-            const segments = await detectSilence(wavPath, jsonPath, threshold, duration, pad);
-            const intervalsJson = JSON.stringify(segments);
-            
-            statusSilence.innerText = "מבצע חיתוכים ומנקה שאריות...";
-            
-            const cutScript = `cutSilence('${intervalsJson}')`;
-            csInterface.evalScript(cutScript, (cutResultRaw) => {
-                let cutResult;
-                try {
-                    cutResult = JSON.parse(cutResultRaw);
-                } catch (e) {
-                    cutResult = { ok: false, error: cutResultRaw };
-                }
-                
-                if (cutResult && cutResult.ok) {
-                    statusSilence.innerText = "הושלם";
-                } else {
-                    statusSilence.innerText = "שגיאה: " + (cutResult.error || cutResult.message);
-                }
-                btnCutSilence.disabled = false;
-            });
-        } catch(err) {
-            statusSilence.innerText = "שגיאה בתהליך: " + err.message;
+
+            const silenceSegments = await detectSilence(wavPath, jsonPath, threshold, duration, pad);
+
+            statusSilence.innerText = "שולף מידע על קליפי הסיקוונס...";
+            const seqInfoRaw = await lcEvalJsx("getSequenceClipsInfo()");
+            let seqInfo;
+            try { seqInfo = JSON.parse(seqInfoRaw); } catch (e) { seqInfo = { ok: false, error: seqInfoRaw }; }
+            if (!seqInfo || !seqInfo.ok) {
+                throw new Error("שליפת מידע מהסיקוונס נכשלה: " + (seqInfo ? seqInfo.error : seqInfoRaw));
+            }
+
+            statusSilence.innerText = "מחשב קטעים לשמירה...";
+            const totalDuration = await getMediaDurationSeconds(wavPath);
+            if (!totalDuration) {
+                throw new Error("לא הצלחתי לקבוע את אורך האודיו הכולל");
+            }
+
+            const keepIntervals = computeKeepIntervals(silenceSegments, totalDuration);
+            if (keepIntervals.length === 0) {
+                throw new Error("לא נמצאו קטעים לשמירה (כל הקטע זוהה כשקט?)");
+            }
+
+            // ממפים כל קטע "לשמירה" לקליפ/קובץ המקור הנכון שלו (תומך בכל
+            // כמות קליפים על V1, לא רק קליפ בודד)
+            const mappedSegments = mapKeepIntervalsToClips(keepIntervals, seqInfo.clips);
+            if (mappedSegments.length === 0) {
+                throw new Error("לא נמצאה התאמה בין קטעי השמע לקליפים בטיימליין");
+            }
+
+            statusSilence.innerText = "בונה XML לייבוא...";
+            const xmlContent = buildFcpXml(mappedSegments, seqInfo);
+            const xmlPath = path.join(Config.tempDir, `autocaps_cut_${Date.now()}.xml`);
+            fs.writeFileSync(xmlPath, xmlContent, 'utf-8');
+
+            statusSilence.innerText = "מייבא סיקוונס חדש עם החיתוכים...";
+            const importResRaw = await lcEvalJsx(`importXmlAsNewSequence("${xmlPath.replace(/\\/g, '\\\\')}")`);
+            let importRes;
+            try { importRes = JSON.parse(importResRaw); } catch (e) { importRes = { ok: false, error: importResRaw }; }
+
+            if (!importRes || !importRes.ok) {
+                throw new Error("ייבוא ה-XML נכשל: " + (importRes ? importRes.error : importResRaw));
+            }
+
+            statusSilence.innerText = `הושלם! נוצר סיקוונס חדש "${importRes.sequenceName}" עם ${mappedSegments.length} קטעים.` +
+                (importRes.openedInPanel ? "" : " (אם הטיימליין לא נפתח אוטומטית, לחצו פעמיים על הסיקוונס בתיקיית AutoCaps בבין הפרויקטים)");
+        } catch (err) {
+            statusSilence.innerText = "שגיאה: " + err.message;
+        } finally {
             btnCutSilence.disabled = false;
         }
     });
 });
+
+// מחפש את משך הזמן הכולל (בשניות) של קובץ מדיה באמצעות FFmpeg (דרך פלט ה-stderr
+// שמכיל שורת "Duration: HH:MM:SS.xx"), בלי תלות בקובץ ffprobe נפרד.
+function getMediaDurationSeconds(filePath) {
+    return new Promise((resolve) => {
+        try {
+            const child = spawn(Config.ffmpegPath, ["-i", filePath], { windowsHide: true });
+            let stderrOutput = "";
+            child.stderr.on("data", (d) => stderrOutput += d.toString());
+            child.on("close", () => {
+                const match = stderrOutput.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+                if (match) {
+                    const h = parseInt(match[1], 10);
+                    const m = parseInt(match[2], 10);
+                    const s = parseFloat(match[3]);
+                    resolve(h * 3600 + m * 60 + s);
+                } else {
+                    resolve(null);
+                }
+            });
+            child.on("error", () => resolve(null));
+        } catch (e) {
+            resolve(null);
+        }
+    });
+}
+
+// ממפה כל קטע "לשמירה" (בציר הזמן הכולל של הסיקוונס, 0-based) לקליפ/קובץ
+// המקור המתאים לו. אם קטע "לשמירה" חוצה גבול בין שני קליפים שונים בטיימליין
+// (כלומר נמשך על פני נקודת חיתוך קיימת), הוא מפוצל לכמה תת-קטעים - אחד לכל
+// קליפ מקור מעורב - כדי שכל תת-קטע ב-XML הסופי יצביע על קובץ ונקודות in/out
+// נכונות. clips חייב להיות ממוין לפי seqStart (כפי שמגיע מ-JSX).
+function mapKeepIntervalsToClips(keepIntervals, clips) {
+    const EPS = 1e-4;
+    const sortedClips = clips.slice().sort((a, b) => a.seqStart - b.seqStart);
+    const result = [];
+
+    for (const seg of keepIntervals) {
+        let cursor = seg.start;
+        let guard = 0; // הגנה מפני לולאה אינסופית במקרה של פערים לא צפויים
+
+        while (cursor < seg.end - EPS && guard < 10000) {
+            guard++;
+
+            const clip = sortedClips.find(c => cursor >= c.seqStart - EPS && cursor < c.seqEnd - EPS);
+            if (!clip) {
+                // אין קליפ בטיימליין שמכסה את הרגע הזה (למשל פער/רווח בין
+                // קליפים) - מדלגים קדימה לקליפ הבא שמתחיל אחרי הנקודה הזו
+                const nextClip = sortedClips.find(c => c.seqStart > cursor + EPS);
+                if (!nextClip) break;
+                cursor = nextClip.seqStart;
+                continue;
+            }
+
+            const pieceEnd = Math.min(seg.end, clip.seqEnd);
+            if (pieceEnd - cursor > 0.01) {
+                result.push({
+                    mediaPath: clip.mediaPath,
+                    name: clip.name,
+                    sourceStart: clip.sourceIn + (cursor - clip.seqStart),
+                    sourceEnd: clip.sourceIn + (pieceEnd - clip.seqStart)
+                });
+            }
+            cursor = pieceEnd;
+        }
+    }
+
+    return result;
+}
+
+// הופך רשימת קטעי שקט (silence intervals) לרשימת קטעים ל"שמירה" (הפוך שלהם
+// על ציר הזמן המלא [0, totalDuration]). קטעים קצרים מדי (פחות מפריים בערך)
+// נזרקים כדי למנוע קליפים באורך אפס ב-XML.
+function computeKeepIntervals(silenceIntervals, totalDuration) {
+    const MIN_KEEP_SEC = 0.04;
+    const keep = [];
+    let cursor = 0;
+
+    const sorted = (silenceIntervals || [])
+        .filter(seg => seg && seg.isSilence !== false)
+        .slice()
+        .sort((a, b) => a.start - b.start);
+
+    for (const seg of sorted) {
+        if (seg.start > cursor + MIN_KEEP_SEC) {
+            keep.push({ start: cursor, end: seg.start });
+        }
+        if (seg.end > cursor) cursor = seg.end;
+    }
+
+    if (totalDuration - cursor > MIN_KEEP_SEC) {
+        keep.push({ start: cursor, end: totalDuration });
+    }
+
+    return keep;
+}
+
+// ממיר קצב פריימים עשרוני (למשל 29.97) לזוג timebase+ntsc כפי שדורש
+// פורמט Final Cut Pro XML, ומחזיר גם את קצב הפריימים ה"אמיתי" לחישובי פריימים.
+function computeTimebaseAndNtsc(fps) {
+    const ntscRates = [
+        { rate: 23.976, timebase: 24 },
+        { rate: 29.97, timebase: 30 },
+        { rate: 59.94, timebase: 60 },
+        { rate: 47.952, timebase: 48 }
+    ];
+    for (const r of ntscRates) {
+        if (Math.abs(fps - r.rate) < 0.02) {
+            return { timebase: r.timebase, ntsc: true, actualFps: r.timebase * 1000 / 1001 };
+        }
+    }
+    const rounded = Math.round(fps);
+    return { timebase: rounded, ntsc: false, actualFps: rounded };
+}
+
+// בורח (escape) תווים בעייתיים לפני הכנסה ל-XML
+function xmlEscape(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+// ממיר נתיב קובץ מקומי (Windows) לכתובת file:// כפי שדורש Final Cut Pro XML
+function toFileUrl(filePath) {
+    const normalized = filePath.replace(/\\/g, '/');
+    const encoded = encodeURI(normalized);
+    return 'file://localhost/' + encoded;
+}
+
+// בונה מסמך Final Cut Pro XML (xmeml v5) המכיל סיקוונס חדש עם קליפי וידאו+אודיו
+// עוקבים - רק לקטעים ב-segments (שכבר מופו לקבצי המקור הנכונים שלהם על ידי
+// mapKeepIntervalsToClips). תומך בכמה קבצי מקור שונים, לא רק אחד.
+function buildFcpXml(segments, seqInfo) {
+    const { timebase, ntsc, actualFps } = computeTimebaseAndNtsc(seqInfo.fps);
+    const ntscStr = ntsc ? "TRUE" : "FALSE";
+    const secToFrames = (sec) => Math.max(0, Math.round(sec * actualFps));
+
+    // מיפוי נתיב קובץ -> מזהה file-id ייחודי. כל קובץ מקור מוגדר במלואו רק
+    // בפעם הראשונה שבה הוא מופיע במסמך; בכל שימוש נוסף (כולל בין וידאו
+    // לאודיו של אותו קטע) יש רק הפניה קצרה <file id="..."/>. הגדרה כפולה/לא
+    // עקבית של אותו קובץ הייתה אחת הבעיות המרכזיות בגרסה הישנה.
+    const fileIdByPath = new Map();
+    const definedFileIds = new Set();
+    let nextFileNum = 1;
+
+    function getFileId(mediaPath) {
+        if (!fileIdByPath.has(mediaPath)) {
+            fileIdByPath.set(mediaPath, `file-${nextFileNum++}`);
+        }
+        return fileIdByPath.get(mediaPath);
+    }
+
+    let cursorFrame = 0;
+    const videoClipItems = [];
+    const audioClipItems = [];
+
+    segments.forEach((seg, idx) => {
+        const durationFrames = secToFrames(seg.sourceEnd - seg.sourceStart);
+        if (durationFrames <= 0) return;
+
+        const fileId = getFileId(seg.mediaPath);
+        const isFirstUseOfFile = !definedFileIds.has(fileId);
+        definedFileIds.add(fileId);
+
+        const inFrame = secToFrames(seg.sourceStart);
+        const outFrame = inFrame + durationFrames;
+        const startFrame = cursorFrame;
+        const endFrame = startFrame + durationFrames;
+
+        const i = idx + 1;
+        const videoId = `clipitem-v${i}`;
+        const audioId = `clipitem-a${i}`;
+        const clipDisplayName = xmlEscape(seg.name || "AutoCaps Source");
+        const fileUrl = toFileUrl(seg.mediaPath);
+        const fileDuration = outFrame + timebase * 60;
+
+        // הבלוק המלא של <file> - בכוונה בלי width/height/samplecharacteristics
+        // של וידאו. הצהרה שגויה על רזולוציית המקור (למשל שימוש ברזולוציית
+        // הסיקוונס במקום רזולוציית הקובץ האמיתית) היא מה שגרם לבעיית ה-Scale
+        // הלא-אחיד (109.4% רוחב מול גובה שונה) בגרסה הקודמת. Premiere קורא
+        // את המימדים האמיתיים ישירות מהקובץ בעצמו (הוא קובץ אמיתי וקיים על
+        // הדיסק) ולא צריך שנצהיר עליהם כאן.
+        const fileBlockFull =
+            `<file id="${fileId}">` +
+                `<name>${clipDisplayName}</name>` +
+                `<pathurl>${xmlEscape(fileUrl)}</pathurl>` +
+                `<rate><timebase>${timebase}</timebase><ntsc>${ntscStr}</ntsc></rate>` +
+                `<duration>${fileDuration}</duration>` +
+                `<media>` +
+                    `<video></video>` +
+                    `<audio>` +
+                        `<samplecharacteristics>` +
+                            `<depth>16</depth>` +
+                            `<samplerate>48000</samplerate>` +
+                        `</samplecharacteristics>` +
+                        `<channelcount>2</channelcount>` +
+                    `</audio>` +
+                `</media>` +
+            `</file>`;
+        const fileBlockRef = `<file id="${fileId}"/>`;
+
+        const linkBlocks =
+            `<link><linkclipref>${videoId}</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>${i}</clipindex></link>` +
+            `<link><linkclipref>${audioId}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>${i}</clipindex><groupindex>1</groupindex></link>`;
+
+        videoClipItems.push(
+            `<clipitem id="${videoId}">` +
+                `<name>${clipDisplayName}</name>` +
+                `<enabled>TRUE</enabled>` +
+                `<duration>${fileDuration}</duration>` +
+                `<rate><timebase>${timebase}</timebase><ntsc>${ntscStr}</ntsc></rate>` +
+                `<start>${startFrame}</start>` +
+                `<end>${endFrame}</end>` +
+                `<in>${inFrame}</in>` +
+                `<out>${outFrame}</out>` +
+                (isFirstUseOfFile ? fileBlockFull : fileBlockRef) +
+                linkBlocks +
+            `</clipitem>`
+        );
+
+        // sourcetrack מציין ל-Premiere לקחת את כל הערוצים של טראק האודיו
+        // הראשון בקובץ המקור (בד"כ הזוג הסטריאו המקורי) ולא רק ערוץ שמאל
+        // בודד. חוסר האלמנט הזה הוא מה שגרם לתווית "L" להופיע על כל הקליפים
+        // בגרסה הקודמת - Premiere נפל חזרה לברירת מחדל של ערוץ יחיד.
+        audioClipItems.push(
+            `<clipitem id="${audioId}">` +
+                `<name>${clipDisplayName}</name>` +
+                `<enabled>TRUE</enabled>` +
+                `<duration>${fileDuration}</duration>` +
+                `<rate><timebase>${timebase}</timebase><ntsc>${ntscStr}</ntsc></rate>` +
+                `<start>${startFrame}</start>` +
+                `<end>${endFrame}</end>` +
+                `<in>${inFrame}</in>` +
+                `<out>${outFrame}</out>` +
+                fileBlockRef +
+                `<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>` +
+                linkBlocks +
+            `</clipitem>`
+        );
+
+        cursorFrame = endFrame;
+    });
+
+    const totalFrames = cursorFrame;
+    const seqName = "AutoCaps_SilenceCut_" + Date.now();
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5">
+  <sequence id="sequence-1">
+    <name>${xmlEscape(seqName)}</name>
+    <duration>${totalFrames}</duration>
+    <rate><timebase>${timebase}</timebase><ntsc>${ntscStr}</ntsc></rate>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <width>${seqInfo.width}</width>
+            <height>${seqInfo.height}</height>
+            <pixelaspectratio>square</pixelaspectratio>
+            <rate><timebase>${timebase}</timebase><ntsc>${ntscStr}</ntsc></rate>
+          </samplecharacteristics>
+        </format>
+        <track>
+          ${videoClipItems.join("\n          ")}
+        </track>
+      </video>
+      <audio>
+        <format>
+          <samplecharacteristics>
+            <depth>16</depth>
+            <samplerate>48000</samplerate>
+          </samplecharacteristics>
+          <channelcount>2</channelcount>
+        </format>
+        <track>
+          ${audioClipItems.join("\n          ")}
+        </track>
+      </audio>
+    </media>
+  </sequence>
+</xmeml>
+`;
+}
+
+
 
 
 // ==========================================
