@@ -93,7 +93,7 @@ checkForUpdates();
 
 function log(msg) {
     console.log(msg);
-    //debugDiv.innerText += msg + "\n";
+    debugDiv.innerText += msg + "\n";
 }
 
 function waitForFile(filePath, timeoutMs, onReady, onTimeout) {
@@ -259,6 +259,7 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
 
                 if (parsed && parsed.ok) {
                     statusDiv.innerText = `הושלם! נוצרו ${parsed.count} כתוביות בשכבה חדשה.`;
+                    alert("על מנת לערוך את הכתוביות. היכנסו לשכבת הטקסט, פתחו אותה, פתחו את טקסט, וסמנו את כל הקיפריימים שאותם תרצו לשנות.\n לאחר מכן היכנסו לחלונית Character\n ושם שנו את כל מאפייני הטקסט שתרצו!");
                 } else {
                     statusDiv.innerText = "שגיאה ביצירת שכבת הכתוביות: " + (parsed ? parsed.error : captionResult);
                 }
@@ -268,49 +269,5 @@ function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines
             statusDiv.innerText = "שגיאה בתמלול.";
             btnExport.disabled = false;
         }
-    });
-}
-
-
-// ------------------------------------------
-// עדכון עיצוב לכל הכתוביות הקיימות
-// ------------------------------------------
-function hexToRgbArray(hex) {
-    hex = hex.replace('#', '');
-    const r = parseInt(hex.substring(0, 2), 16) / 255;
-    const g = parseInt(hex.substring(2, 4), 16) / 255;
-    const b = parseInt(hex.substring(4, 6), 16) / 255;
-    return [r, g, b];
-}
-
-const btnRestyle = document.getElementById('btnRestyle');
-const statusRestyle = document.getElementById('statusRestyle');
-
-if (btnRestyle) {
-    btnRestyle.addEventListener('click', () => {
-        btnRestyle.disabled = true;
-        statusRestyle.innerText = "מעדכן עיצוב...";
-
-        const fontFamily = document.getElementById('capFontFamily').value.trim();
-        const fontSize = parseInt(document.getElementById('capFontSize').value, 10);
-        const fillColor = hexToRgbArray(document.getElementById('capFillColor').value);
-        const applyStroke = document.getElementById('capApplyStroke').checked;
-        const strokeColor = hexToRgbArray(document.getElementById('capStrokeColor').value);
-        const strokeWidth = applyStroke ? parseFloat(document.getElementById('capStrokeWidth').value) : 0;
-
-        const script = `restyleAllCaptions(${fontSize}, ${JSON.stringify(fillColor)}, ${JSON.stringify(strokeColor)}, ${strokeWidth}, "${fontFamily.replace(/"/g, '')}")`;
-
-        csInterface.evalScript(script, (result) => {
-            log("Restyle result: " + result);
-            let parsed = null;
-            try { parsed = JSON.parse(result); } catch (e) {}
-
-            if (parsed && parsed.ok) {
-                statusRestyle.innerText = `עודכנו ${parsed.count} כתוביות בהצלחה.`;
-            } else {
-                statusRestyle.innerText = "שגיאה: " + (parsed ? parsed.error : result);
-            }
-            btnRestyle.disabled = false;
-        });
     });
 }

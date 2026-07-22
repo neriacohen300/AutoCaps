@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="11.0" ExtensionBundleId="com.autocaps.ae.panel" ExtensionBundleVersion="1.0.2" ExtensionBundleName="AutoCaps for After Effects" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<ExtensionManifest Version="11.0" ExtensionBundleId="com.autocaps.ae.panel" ExtensionBundleVersion="1.0.3" ExtensionBundleName="AutoCaps for After Effects" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.autocaps.ae.panel" Version="1.0.2" />
+        <Extension Id="com.autocaps.ae.panel" Version="1.0.3" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
