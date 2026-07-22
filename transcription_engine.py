@@ -223,15 +223,22 @@ _SENTENCE_END_CHARS = set(".?!:;׃…")  # includes Hebrew sof-pasuq (׃) and el
 #      resolution; they should be the proper Hebrew gershayim (״) / geresh (׳)
 #      characters instead.
 #
-# This sanitizer fixes all three by injecting invisible Unicode control
-# characters (RLM / directional isolates) and normalizing acronym punctuation.
-# It is applied once, on the final wrapped display lines, right before they
-# are written into the .srt file — after word/char wrapping so it can't skew
-# any wrap-width decisions.
+# This sanitizer fixes all three by injecting invisible Unicode directional
+# isolate characters and normalizing acronym punctuation. It is applied once,
+# on the final wrapped display lines, right before they are written into the
+# .srt file — after word/char wrapping so it can't skew any wrap-width
+# decisions.
+#
+# Important: Premiere's caption renderer does not auto-detect RTL as the base
+# direction of a Hebrew line — it defaults to LTR unless told otherwise
+# explicitly, and it does NOT honor bare neutral hints like a lone RLM
+# (Right-to-Left Mark). It DOES honor explicit directional isolates (LRI/RLI
+# ... PDI), so every fix here — embedded Latin runs and the line as a whole —
+# uses explicit isolates rather than neutral marks.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_RLM = "\u200f"  # Right-to-Left Mark — gives a neutral char strong RTL direction
 _LRI = "\u2066"  # Left-to-Right Isolate
+_RLI = "\u2067"  # Right-to-Left Isolate
 _PDI = "\u2069"  # Pop Directional Isolate
 
 _HEBREW_RANGE = "\u0590-\u05FF\uFB1D-\uFB4F"
@@ -243,9 +250,6 @@ _HEBREW_CHAR_RE = re.compile(f"[{_HEBREW_RANGE}]")
 # "New York" is isolated as two words, each staying internally LTR without
 # swallowing the Hebrew around it.
 _LATIN_RUN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._\-/@:+#]*[A-Za-z0-9])?")
-
-# Trailing run of sentence punctuation at the very end of the line.
-_TRAILING_PUNCT_RE = re.compile(r'([.?!:;׃…,]+)\s*$')
 
 # ASCII quote/apostrophe sitting between two Hebrew letters == acronym marker
 # (e.g. צה"ל, ד"ר, רח' = an abbreviation, not a quotation).
@@ -283,17 +287,23 @@ def _isolate_embedded_latin(text: str) -> str:
     return _LATIN_RUN_RE.sub(lambda m: f"{_LRI}{m.group(0)}{_PDI}", text)
 
 
-def _lock_trailing_punctuation(text: str) -> str:
+def _force_rtl_paragraph(text: str) -> str:
     """
-    Insert an RLM immediately before trailing sentence-ending punctuation
-    on a Hebrew line so the punctuation (which is direction-neutral on its
-    own) inherits strong RTL direction from the preceding Hebrew and stays
-    anchored at the correct (visual) end of the line instead of flipping
-    to the wrong side.
+    Wrap the entire display line in an explicit RTL isolate (RLI ... PDI).
+
+    Premiere's caption renderer does not auto-detect RTL as the base
+    direction of a Hebrew paragraph/line — it appears to default to LTR
+    unless told otherwise explicitly. That means any neutral character at
+    the very end of the line (typically trailing punctuation) with nothing
+    after it to inherit direction from falls back to the LTR default and
+    renders on the wrong (right) side, even when it's individually isolated.
+    Forcing the whole line into an RTL isolate fixes this at the source,
+    since Premiere does honor explicit directional isolates (proven by the
+    Latin-run isolation in _isolate_embedded_latin already working).
     """
     if not _HEBREW_CHAR_RE.search(text):
         return text
-    return _TRAILING_PUNCT_RE.sub(lambda m: _RLM + m.group(1), text)
+    return f"{_RLI}{text}{_PDI}"
 
 
 def sanitize_rtl_text(text: str) -> str:
@@ -305,7 +315,7 @@ def sanitize_rtl_text(text: str) -> str:
         return text
     text = _fix_hebrew_acronym_quotes(text)
     text = _isolate_embedded_latin(text)
-    text = _lock_trailing_punctuation(text)
+    text = _force_rtl_paragraph(text)
     return text
 
 

@@ -4,7 +4,7 @@ const os = require('os');
 const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
 
 const Config = {
-    version: "1.0.0-ae",
+    version: "1.0.1-ae",
 
     // פרטי מאגר הגיטהאב לבדיקת עדכונים
     githubOwner: "neriacohen300",
