@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+    <meta charset="utf-8">
+    <title>AutoCaps for After Effects</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>AutoCaps <span id="versionTag" class="version-tag"></span></h2>
+            <span class="subtitle">תמלול וכתוביות אוטומטיות ל-After Effects</span>
+        </div>
+
+        <div id="updateBanner" class="update-banner hidden">
+            <span id="updateBannerText">קיימת גרסה חדשה של AutoCaps!</span>
+            <button id="btnUpdateDownload" class="update-download-btn">הורדה מ-GitHub</button>
+        </div>
+
+        <div class="section">
+            <div class="section-title">הגדרות פרויקט</div>
+            <div class="field-group">
+                <label for="language">שפת התמלול</label>
+                <select id="language">
+                    <option value="he">עברית (Hebrew)</option>
+                    <option value="en">אנגלית (English)</option>
+                </select>
+            </div>
+            <div class="field-group">
+                <label for="timelineRange">טווח בקומפוזיציה</label>
+                <select id="timelineRange">
+                    <option value="entire">כל הקומפוזיציה (Entire Composition)</option>
+                    <option value="inOut">אזור עבודה בלבד (Work Area)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">הגדרות כתוביות</div>
+            <div class="field-row">
+                <div class="field-group">
+                    <label for="maxWords">מילים בשורה</label>
+                    <input type="number" id="maxWords" value="8" min="2">
+                </div>
+                <div class="field-group">
+                    <label for="maxLines">שורות בכתובית</label>
+                    <input type="number" id="maxLines" value="1" min="1">
+                </div>
+            </div>
+            <label class="checkbox-wrapper" for="removePunctuation">
+                <input type="checkbox" id="removePunctuation">
+                <span class="custom-checkbox"></span>
+                <span class="checkbox-text">הסרת סימני פיסוק (מראה נקי)</span>
+            </label>
+            <div class="field-group">
+                <label for="customVocabulary">מילון מונחים מותאם אישית
+                    <span class="info-icon" tabindex="0" title="הוסיפו שמות, מונחים מקצועיים, ראשי תיבות או מילים לא נפוצות, מופרדות בפסיק. זה עוזר למודל התמלול לזהות אותן נכון. הרשימה נשמרת אוטומטית.">i</span>
+                </label>
+                <textarea id="customVocabulary" rows="3" placeholder="לדוגמה: AutoCaps, ivrit-ai, After Effects"></textarea>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">חומרה ועיבוד</div>
+            <div class="field-group">
+                <label for="deviceSelect">מנוע עיבוד</label>
+                <select id="deviceSelect">
+                    <option value="cuda">GPU (NVIDIA CUDA) - מהיר</option>
+                    <option value="cpu">CPU (מעבד) - איטי</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="action-zone">
+            <button id="btnExport">יצירת שכבת כתוביות בקומפוזיציה</button>
+            <div id="status">מוכן לעבודה...</div>
+        </div>
+
+        <details class="collapsible-group">
+            <summary class="collapsible-header">עיצוב כתוביות קיימות</summary>
+            <div class="collapsible-body">
+                <div class="section">
+                    <div class="field-group">
+                        <label for="capFontFamily">שם הפונט (Font Family)
+                            <span class="info-icon" tabindex="0" title="שם מדויק של הפונט כפי שמופיע ב-After Effects, לדוגמה: Arial-Bold, OpenSansHebrew-Bold. אם השם שגוי, הפונט הקיים יישאר ללא שינוי.">i</span>
+                        </label>
+                        <input type="text" id="capFontFamily" placeholder="לדוגמה: Arial-Bold">
+                    </div>
+                    <div class="field-row">
+                        <div class="field-group">
+                            <label for="capFontSize">גודל פונט</label>
+                            <input type="number" id="capFontSize" value="60" min="10">
+                        </div>
+                        <div class="field-group">
+                            <label for="capFillColor">צבע מילוי</label>
+                            <input type="color" id="capFillColor" value="#ffffff">
+                        </div>
+                    </div>
+                    <label class="checkbox-wrapper" for="capApplyStroke">
+                        <input type="checkbox" id="capApplyStroke" checked>
+                        <span class="custom-checkbox"></span>
+                        <span class="checkbox-text">הוספת מסגרת (Stroke)</span>
+                    </label>
+                    <div class="field-row">
+                        <div class="field-group">
+                            <label for="capStrokeColor">צבע מסגרת</label>
+                            <input type="color" id="capStrokeColor" value="#000000">
+                        </div>
+                        <div class="field-group">
+                            <label for="capStrokeWidth">עובי מסגרת</label>
+                            <input type="number" id="capStrokeWidth" value="3" min="0" step="0.5">
+                        </div>
+                    </div>
+                </div>
+                <div class="action-zone">
+                    <button id="btnRestyle" style="background-color:#7a3ee6;">עדכן עיצוב לכל הכתוביות</button>
+                    <div id="statusRestyle" style="font-size: 11px; text-align: center; margin-top: 5px; color: var(--text-secondary);">מוכן...</div>
+                </div>
+            </div>
+        </details>
+
+    </div>
+
+    <script src="js/CSInterface.js"></script>
+    <script src="js/config.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
