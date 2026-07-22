@@ -4,13 +4,92 @@ const fs = require('fs');
 const csInterface = new CSInterface();
 const btnExport = document.getElementById('btnExport');
 const statusDiv = document.getElementById('status');
-const versionTag = document.getElementById('versionTag');
 
 const debugDiv = document.createElement('div');
 debugDiv.style = "font-size:11px; color:#aaa; margin-top:10px; white-space:pre-wrap; direction:ltr; text-align:left;";
 statusDiv.parentNode.appendChild(debugDiv);
 
 if (versionTag) versionTag.innerText = "v" + Config.version;
+
+// ------------------------------------------
+// בדיקת גרסה חדשה ב-GitHub (מציגה את updateBanner אם יש גרסה חדשה יותר)
+//
+// חשוב: /releases/latest מחזיר את הריליס האחרון בכל הריפו (כל המוצרים
+// ביחד), לא ספציפית את הגרסה האחרונה של AE. הריפו משתמש במוסכמת תיוג:
+//   v1.2.3          -> Premiere Pro
+//   v1.2.3-resolve  -> DaVinci Resolve
+//   v1.2.3-ae       -> After Effects
+// לכן צריך למשוך את כל הרשימה מ-/releases ולסנן לפי הסיומת "-ae".
+// ------------------------------------------
+const AE_TAG_SUFFIX = "-ae";
+
+function isAeTag(tag) {
+    return typeof tag === "string" && tag.indexOf(AE_TAG_SUFFIX) === (tag.length - AE_TAG_SUFFIX.length) && tag.length > AE_TAG_SUFFIX.length;
+}
+
+function pickLatestAeRelease(releases) {
+    const matches = (releases || [])
+        .filter((r) => !r.draft && isAeTag(r.tag_name))
+        .sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
+    return matches.length ? matches[0] : null;
+}
+
+function parseVersionNumbers(v) {
+    // שולפים רק את החלק המספרי, למשל "1.2.0-ae" -> [1, 2, 0]
+    const match = String(v || "").match(/(\d+)\.(\d+)\.(\d+)/);
+    if (!match) return [0, 0, 0];
+    return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
+}
+
+function isNewerVersion(remoteVersion, localVersion) {
+    const r = parseVersionNumbers(remoteVersion);
+    const l = parseVersionNumbers(localVersion);
+    for (let i = 0; i < 3; i++) {
+        if (r[i] > l[i]) return true;
+        if (r[i] < l[i]) return false;
+    }
+    return false;
+}
+
+async function checkForUpdates() {
+    try {
+        const apiUrl = `https://api.github.com/repos/${Config.githubOwner}/${Config.githubRepo}/releases?per_page=100`;
+        const res = await fetch(apiUrl, { headers: { Accept: "application/vnd.github+json" } });
+        if (!res.ok) {
+            log("Update check: GitHub API returned " + res.status);
+            return;
+        }
+
+        const releases = await res.json();
+        const latest = pickLatestAeRelease(releases);
+        if (!latest) {
+            log("Update check: no -ae release found");
+            return;
+        }
+
+        const remoteVersion = (latest.tag_name || "").replace(/^v/i, "");
+        log("Update check: local=" + Config.version + " remote=" + remoteVersion);
+
+        if (isNewerVersion(remoteVersion, Config.version)) {
+            const banner = document.getElementById('updateBanner');
+            const bannerText = document.getElementById('updateBannerText');
+            const btnDownload = document.getElementById('btnUpdateDownload');
+            const releaseUrl = latest.html_url || `https://github.com/${Config.githubOwner}/${Config.githubRepo}/releases/tag/${latest.tag_name}`;
+
+            if (bannerText) bannerText.innerText = `קיימת גרסה חדשה של AutoCaps! (${remoteVersion})`;
+            if (banner) banner.classList.remove('hidden');
+            if (btnDownload) {
+                btnDownload.addEventListener('click', () => {
+                    csInterface.openURLInDefaultBrowser(releaseUrl);
+                });
+            }
+        }
+    } catch (e) {
+        // לא חוסמים את הפאנל אם אין אינטרנט / GitHub לא זמין - רק רושמים ללוג
+        log("Update check failed: " + e.toString());
+    }
+}
+checkForUpdates();
 
 function log(msg) {
     console.log(msg);

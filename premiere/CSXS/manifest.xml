@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="11.0" ExtensionBundleId="com.autocaps.panel" ExtensionBundleVersion="1.0.0" ExtensionBundleName="AutoCaps" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<ExtensionManifest Version="11.0" ExtensionBundleId="com.autocaps.panel" ExtensionBundleVersion="1.0.7" ExtensionBundleName="AutoCaps" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.autocaps.panel" Version="1.0.0" />
+        <Extension Id="com.autocaps.panel" Version="1.0.7" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
