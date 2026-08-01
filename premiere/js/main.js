@@ -40,6 +40,15 @@ btnExport.addEventListener('click', async () => {
     const maxWords = document.getElementById('maxWords').value;
     const maxLines = document.getElementById('maxLines').value;
     const device = document.getElementById('deviceSelect').value;
+    // בחירת מודל תמלול: אם המשתמש בחר "מותאם אישית" ניקח את הערך מהשדה החופשי, אחרת את הבחירה מהרשימה
+    const modelSelectEl = document.getElementById('modelSelect');
+    const modelCustomEl = document.getElementById('modelCustomPath');
+    let selectedModel = Config.modelName; // ברירת מחדל אם אין אלמנטים בדף
+    if (modelSelectEl) {
+        selectedModel = (modelSelectEl.value === 'custom' && modelCustomEl && modelCustomEl.value.trim())
+            ? modelCustomEl.value.trim()
+            : modelSelectEl.value;
+    }
     const btnCutSilence = document.getElementById('btnCutSilence');
     const statusSilence = document.getElementById('statusSilence');
     // קריאת המצב של תיבת הסימון החדשה
@@ -77,7 +86,7 @@ btnExport.addEventListener('click', async () => {
             log("WAV file ready, size: " + fs.statSync(audioOutPath).size);
             statusDiv.innerText = "מתמלל... (אנא המתן)";
             // העברת removePunctuation וה-customVocabulary כפרמטרים נוספים
-            runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device, range, removePunctuation, customVocabulary);
+            runTranscriptionEngine(audioOutPath, srtOutPath, language, maxWords, maxLines, device, range, removePunctuation, customVocabulary, selectedModel);
         }, () => {
             log("WAV file never appeared!");
             statusDiv.innerText = "שגיאה: קובץ WAV לא נוצר";
@@ -86,11 +95,11 @@ btnExport.addEventListener('click', async () => {
     });
 });
 
-function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device, range, removePunctuation, customVocabulary) {
+function runTranscriptionEngine(audioPath, srtPath, language, maxWords, maxLines, device, range, removePunctuation, customVocabulary, modelName) {
     const args = [
         audioPath, srtPath,
         "--language", language,
-        "--model", Config.modelName,
+        "--model", modelName || Config.modelName,
         "--model-dir", Config.modelDir,
         "--device", device,
         "--max-words-per-line", maxWords,
@@ -1119,4 +1128,59 @@ if (customVocabularyField) {
     loadCustomVocabulary();
     // שמירה אוטומטית בכל פעם שהמשתמש עוזב את השדה
     customVocabularyField.addEventListener('blur', saveCustomVocabulary);
+}
+
+// =========================================================================
+// בחירת מודל תמלול - שמירה/טעינה בין הפעלות + הצגת שדה נתיב מותאם אישית
+// =========================================================================
+
+const modelSelectField = document.getElementById('modelSelect');
+const modelCustomField = document.getElementById('modelCustomPath');
+const modelChoicePath = path.join(path.dirname(Config.vocabularyPath), 'model_choice.json');
+
+function updateModelCustomVisibility() {
+    if (!modelSelectField || !modelCustomField) return;
+    modelCustomField.style.display = (modelSelectField.value === 'custom') ? 'block' : 'none';
+}
+
+function loadModelChoice() {
+    if (!modelSelectField) return;
+    try {
+        if (fs.existsSync(modelChoicePath)) {
+            const raw = fs.readFileSync(modelChoicePath, 'utf-8');
+            const data = JSON.parse(raw);
+            if (data.model) modelSelectField.value = data.model;
+            if (data.customPath && modelCustomField) modelCustomField.value = data.customPath;
+        }
+    } catch (e) {
+        log("Failed to load model choice: " + e.message);
+    }
+    updateModelCustomVisibility();
+}
+
+function saveModelChoice() {
+    if (!modelSelectField) return;
+    try {
+        const dir = path.dirname(modelChoicePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(modelChoicePath, JSON.stringify({
+            model: modelSelectField.value,
+            customPath: modelCustomField ? modelCustomField.value : ""
+        }, null, 2), 'utf-8');
+    } catch (e) {
+        log("Failed to save model choice: " + e.message);
+    }
+}
+
+if (modelSelectField) {
+    loadModelChoice();
+    modelSelectField.addEventListener('change', () => {
+        updateModelCustomVisibility();
+        saveModelChoice();
+    });
+    if (modelCustomField) {
+        modelCustomField.addEventListener('blur', saveModelChoice);
+    }
 }

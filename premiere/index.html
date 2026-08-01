@@ -73,6 +73,18 @@
                             <option value="cpu">CPU (מעבד) - איטי</option>
                         </select>
                     </div>
+                    <div class="field-group">
+                        <label for="modelSelect">מודל תמלול
+                            <span class="info-icon" tabindex="0" title="בחרו מודל תמלול. מודלי ivrit-ai מותאמים לעברית ומדויקים יותר עבורה. מודל large-v3 הרגיל תומך גם בשפות נוספות אך פחות מדויק בעברית.">i</span>
+                        </label>
+                        <select id="modelSelect">
+                            <option value="ivrit-ai/whisper-large-v3-turbo-ct2">ivrit-ai Large v3 Turbo (מומלץ - מהיר ומדויק לעברית)</option>
+                            <option value="ivrit-ai/whisper-large-v3-ct2">ivrit-ai Large v3 (מדויק יותר, איטי יותר)</option>
+                            <option value="large-v3">Whisper Large v3 (רב-לשוני, ללא התאמה לעברית)</option>
+                            <option value="custom">מודל מותאם אישית (נתיב / שם HuggingFace)</option>
+                        </select>
+                        <input type="text" id="modelCustomPath" placeholder="לדוגמה: D:\models\my-model או user/repo-name" style="display:none; margin-top:6px;">
+                    </div>
                 </div>
 
                 <div class="action-zone">
