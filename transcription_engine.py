@@ -144,12 +144,20 @@ def _get_audio_duration(audio_path: Path) -> float | None:
 
 def _format_timestamp(seconds: float) -> str:
     """Convert seconds to SRT timestamp: HH:MM:SS,mmm"""
-    td = timedelta(seconds=seconds)
-    total_seconds = int(td.total_seconds())
-    millis = int(round((td.total_seconds() - total_seconds) * 1000))
+    # Work in integer milliseconds so rounding can never produce ",1000".
+    total_ms = max(0, int(round(seconds * 1000)))
+    total_seconds, millis = divmod(total_ms, 1000)
     hours, remainder = divmod(total_seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
+
+_TRAILING_COMMA_CHARS = ",،、"
+
+
+def _strip_trailing_comma(text: str) -> str:
+    """A subtitle block may end with a period, but never with a comma."""
+    return text.rstrip().rstrip(_TRAILING_COMMA_CHARS).rstrip()
 
 
 def _wrap_text(text: str, max_words: int | None, max_chars: int | None) -> list[str]:
@@ -351,6 +359,33 @@ def _flatten_words(segment) -> list[dict]:
     return words_out
 
 
+def _tighten_word_timings(words: list[dict]) -> list[dict]:
+    """
+    Whisper's word timestamps tend to be "sticky" around pauses: the first
+    word after a silence often starts too early (stretched backwards into the
+    silence) and the last word before a silence often ends too late. This
+    caps each word's duration at a plausible value based on its length and
+    pulls the stretched edge back toward the actual speech.
+    """
+    prev_end = None
+    for w in words:
+        s, e = w["start"], w["end"]
+        if s is None or e is None:
+            continue
+        n_chars = max(len(w["text"]), 1)
+        max_dur = 0.30 + 0.09 * n_chars  # e.g. 5-letter word ≈ 0.75s
+        if e - s > max_dur:
+            gap_before = (s - prev_end) if prev_end is not None else 1.0
+            if gap_before >= 0.25:
+                # follows a pause -> start was dragged backwards
+                w["start"] = e - max_dur
+            else:
+                # mid-speech -> end was dragged forward
+                w["end"] = s + max_dur
+        prev_end = w["end"]
+    return words
+
+
 def _group_words_into_cues(
     words: list[dict],
     max_words_per_cue: int | None,
@@ -408,16 +443,24 @@ def _clean_punctuation(text: str) -> str:
 
 
 def _cues_to_timed_entries(
-    cues: list[list[dict]], 
-    min_display_sec: float, 
-    remove_punctuation: bool = False
+    cues: list[list[dict]],
+    min_display_sec: float,
+    remove_punctuation: bool = False,
+    timing_offset: float = 0.0,
 ) -> list[tuple[float, float, str]]:
     """
-    Turn word cues into (start, end, text) triples, enforcing a minimum
-    on-screen duration and preventing any overlap with the previous entry.
+    Turn word cues into (start, end, text) triples.
+
+    Timing rules (the start time is always the real start of the first word —
+    it is never pushed later because of a previous cue):
+      - a cue shorter than min_display_sec is extended, but only as far as the
+        start of the next cue (minus a 20ms gap), so it never overlaps it
+      - if the previous cue overlaps this cue's start, the PREVIOUS cue is
+        trimmed instead of delaying this one
+      - a cue never ends with a comma (periods are kept)
+      - timing_offset shifts everything (negative = earlier, positive = later)
     """
-    entries: list[tuple[float, float, str]] = []
-    last_end = 0.0
+    raw: list[list] = []  # [start, end, text]
     for cue in cues:
         words_text = []
         for w in cue:
@@ -426,16 +469,32 @@ def _cues_to_timed_entries(
                 t = _clean_punctuation(t)
             words_text.append(t)
 
-        text = " ".join(words_text).strip()
+        text = _strip_trailing_comma(" ".join(words_text).strip())
         if not text:
             continue
-        start = cue[0]["start"] if cue[0]["start"] is not None else last_end
-        end = cue[-1]["end"] if cue[-1]["end"] is not None else start
-        start = max(start, last_end)
+        start = cue[0]["start"]
+        end = cue[-1]["end"]
+        if start is None:
+            start = raw[-1][1] if raw else 0.0
+        if end is None:
+            end = start
+        raw.append([start, end, text])
+
+    entries: list[tuple[float, float, str]] = []
+    n = len(raw)
+    for i, (start, end, text) in enumerate(raw):
+        next_start = raw[i + 1][0] if i + 1 < n else None
         if end < start + min_display_sec:
             end = start + min_display_sec
+        if next_start is not None and end > next_start - 0.02:
+            # don't overlap the next cue; keep at least a sliver of display time
+            end = max(next_start - 0.02, start + 0.1)
+        start += timing_offset
+        end += timing_offset
+        if start < 0:
+            end = max(end - start, 0.1)
+            start = 0.0
         entries.append((start, end, text))
-        last_end = end
     return entries
 
 
@@ -453,6 +512,12 @@ def _entry_to_srt_blocks(
     """
     lines = _wrap_text(text, None, max_chars_per_line)
     line_chunks = _chunk_lines(lines, max_lines_per_subtitle)
+
+    # Whatever ends up as the last line of a block must not end with a comma
+    # (this also covers blocks created by splitting a long cue mid-sentence).
+    for chunk in line_chunks:
+        if chunk:
+            chunk[-1] = _strip_trailing_comma(chunk[-1])
 
     if len(line_chunks) == 1:
         block_text = "\n".join(sanitize_rtl_text(l) for l in line_chunks[0])
@@ -494,6 +559,7 @@ def transcribe(
     min_cue_duration: float,
     remove_punctuation: bool, # פרמטר חדש שהתווסף
     custom_vocabulary: str | None = None, # מילון מונחים מותאם אישית (שמות, מונחים מקצועיים וכו')
+    timing_offset: float = 0.0, # הזזה גלובלית של כל הכתוביות בשניות (שלילי = מוקדם יותר)
 ) -> None:
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -549,6 +615,9 @@ def transcribe(
         vad_parameters=dict(min_silence_duration_ms=500),
         word_timestamps=True,
         initial_prompt=initial_prompt,
+        # Prevents timing drift / repeated-text loops from carrying over
+        # from one window into the next.
+        condition_on_previous_text=False,
     )
     _log(
         f"Detected language: {info.language} "
@@ -592,8 +661,11 @@ def transcribe(
     # ── Regroup words into short cues, then render SRT blocks ─────────────────
     # חלוקת המשפטים מתרחשת לפי המבנה המקורי (נקודות, פסיקים וכו') כדי לשמור על מקצב טבעי,
     # אך רק בשלב ההרכבה הטקסט עצמו מנוקה במידה והדגל פעיל.
+    word_stream = _tighten_word_timings(word_stream)
     cues = _group_words_into_cues(word_stream, max_words_per_line, cue_gap_sec)
-    timed_entries = _cues_to_timed_entries(cues, min_cue_duration, remove_punctuation)
+    timed_entries = _cues_to_timed_entries(
+        cues, min_cue_duration, remove_punctuation, timing_offset
+    )
 
     srt_blocks: list[str] = []
     for start, end, text in timed_entries:
@@ -685,6 +757,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Minimum on-screen duration for any single subtitle "
                              "cue, in seconds (default: 0.4).")
     # הוספת הפרמטר ל-CLI
+    parser.add_argument("--timing-offset", type=float, default=0.0, metavar="SEC",
+                        help="Shift all subtitles by this many seconds. Negative = "
+                             "earlier, positive = later (default: 0.0). Use e.g. -0.1 "
+                             "if subtitles consistently appear too late.")
     parser.add_argument("--remove-punctuation", action="store_true",
                         help="Remove punctuation from subtitles (e.g. periods, commas, question marks).")
     parser.add_argument("--custom-vocabulary", default=None, metavar="TERMS",
@@ -711,6 +787,7 @@ def main() -> None:
         min_cue_duration=args.min_duration,
         remove_punctuation=args.remove_punctuation, # העברת הפרמטר
         custom_vocabulary=args.custom_vocabulary,
+        timing_offset=args.timing_offset,
     )
 
 
