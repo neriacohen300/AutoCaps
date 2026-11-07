@@ -332,6 +332,11 @@ def _flatten_words(segment) -> list[dict]:
     Pull per-word timestamps out of a faster-whisper segment. Falls back to
     treating the whole segment as a single "word" if word timestamps weren't
     produced (e.g. word_timestamps was off for this run).
+
+    Every word also carries "seg_end" (the whisper segment's end time). The
+    last cue of a segment uses it as its end time, exactly like
+    transcribe_single.py does, because whisper's per-word end timestamps
+    tend to be a bit early and would otherwise cut the subtitle short.
     """
     words_out: list[dict] = []
     seg_words = getattr(segment, "words", None) or []
@@ -346,6 +351,7 @@ def _flatten_words(segment) -> list[dict]:
                 "start": w.start,
                 "end": w.end,
                 "segment_boundary": i == last_idx,
+                "seg_end": segment.end,
             })
     else:
         text = segment.text.strip()
@@ -355,6 +361,7 @@ def _flatten_words(segment) -> list[dict]:
                 "start": segment.start,
                 "end": segment.end,
                 "segment_boundary": True,
+                "seg_end": segment.end,
             })
     return words_out
 
@@ -363,9 +370,12 @@ def _tighten_word_timings(words: list[dict]) -> list[dict]:
     """
     Whisper's word timestamps tend to be "sticky" around pauses: the first
     word after a silence often starts too early (stretched backwards into the
-    silence) and the last word before a silence often ends too late. This
-    caps each word's duration at a plausible value based on its length and
-    pulls the stretched edge back toward the actual speech.
+    silence). This caps the duration of such a word at a plausible value
+    based on its length and pulls the stretched START back toward the actual
+    speech.
+
+    NOTE: word END times are deliberately NOT shortened anymore. Shortening
+    them caused subtitles to disappear before the speaker finished the line.
     """
     prev_end = None
     for w in words:
@@ -379,9 +389,7 @@ def _tighten_word_timings(words: list[dict]) -> list[dict]:
             if gap_before >= 0.25:
                 # follows a pause -> start was dragged backwards
                 w["start"] = e - max_dur
-            else:
-                # mid-speech -> end was dragged forward
-                w["end"] = s + max_dur
+            # else: mid-speech -> leave the end alone (do not cut the word)
         prev_end = w["end"]
     return words
 
@@ -447,12 +455,18 @@ def _cues_to_timed_entries(
     min_display_sec: float,
     remove_punctuation: bool = False,
     timing_offset: float = 0.0,
+    end_padding: float = 0.15,
 ) -> list[tuple[float, float, str]]:
     """
     Turn word cues into (start, end, text) triples.
 
     Timing rules (the start time is always the real start of the first word —
     it is never pushed later because of a previous cue):
+      - if a cue ends at the end of its whisper segment, its end time is the
+        segment's end (same as transcribe_single.py), never earlier than the
+        last word's end
+      - end_padding is added to every cue's end so the text doesn't vanish
+        the instant the last word finishes
       - a cue shorter than min_display_sec is extended, but only as far as the
         start of the next cue (minus a 20ms gap), so it never overlaps it
       - if the previous cue overlaps this cue's start, the PREVIOUS cue is
@@ -476,8 +490,15 @@ def _cues_to_timed_entries(
         end = cue[-1]["end"]
         if start is None:
             start = raw[-1][1] if raw else 0.0
+
+        # Like transcribe_single: the last cue of a segment ends at s.end
+        last = cue[-1]
+        if last.get("segment_boundary") and last.get("seg_end") is not None:
+            end = max(end if end is not None else 0.0, last["seg_end"])
+
         if end is None:
             end = start
+        end += end_padding
         raw.append([start, end, text])
 
     entries: list[tuple[float, float, str]] = []
@@ -560,6 +581,7 @@ def transcribe(
     remove_punctuation: bool, # פרמטר חדש שהתווסף
     custom_vocabulary: str | None = None, # מילון מונחים מותאם אישית (שמות, מונחים מקצועיים וכו')
     timing_offset: float = 0.0, # הזזה גלובלית של כל הכתוביות בשניות (שלילי = מוקדם יותר)
+    end_padding: float = 0.15, # זמן נוסף בסוף כל כתובית כדי שלא תיעלם מוקדם מדי
 ) -> None:
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -612,12 +634,14 @@ def transcribe(
         language=language,
         beam_size=5,
         vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
+        # Same as transcribe_single.py: a longer silence threshold so speech
+        # edges are not clipped as often.
+        vad_parameters=dict(min_silence_duration_ms=1000),
         word_timestamps=True,
         initial_prompt=initial_prompt,
-        # Prevents timing drift / repeated-text loops from carrying over
-        # from one window into the next.
-        condition_on_previous_text=False,
+        # Same as transcribe_single.py. If you ever see repeated-text loops
+        # on long files, set this back to False.
+        condition_on_previous_text=True,
     )
     _log(
         f"Detected language: {info.language} "
@@ -664,7 +688,7 @@ def transcribe(
     word_stream = _tighten_word_timings(word_stream)
     cues = _group_words_into_cues(word_stream, max_words_per_line, cue_gap_sec)
     timed_entries = _cues_to_timed_entries(
-        cues, min_cue_duration, remove_punctuation, timing_offset
+        cues, min_cue_duration, remove_punctuation, timing_offset, end_padding
     )
 
     srt_blocks: list[str] = []
@@ -761,6 +785,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Shift all subtitles by this many seconds. Negative = "
                              "earlier, positive = later (default: 0.0). Use e.g. -0.1 "
                              "if subtitles consistently appear too late.")
+    parser.add_argument("--end-padding", type=float, default=0.15, metavar="SEC",
+                        help="Extra time (seconds) added to the end of every subtitle "
+                             "so it doesn't disappear before the speaker finishes "
+                             "(default: 0.15). Never overlaps the next subtitle.")
     parser.add_argument("--remove-punctuation", action="store_true",
                         help="Remove punctuation from subtitles (e.g. periods, commas, question marks).")
     parser.add_argument("--custom-vocabulary", default=None, metavar="TERMS",
@@ -788,6 +816,7 @@ def main() -> None:
         remove_punctuation=args.remove_punctuation, # העברת הפרמטר
         custom_vocabulary=args.custom_vocabulary,
         timing_offset=args.timing_offset,
+        end_padding=args.end_padding,
     )
 
 
