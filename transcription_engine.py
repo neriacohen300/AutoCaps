@@ -10,52 +10,26 @@ Packaging to EXE (PyInstaller):
 Dependencies:
     pip install faster-whisper
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STDOUT  →  Newline-delimited JSON (NDJSON) progress events
-           Parse these in the Premiere Pro extension.
+STDOUT  ->  Newline-delimited JSON (NDJSON) progress events
+            Parse these in the Premiere Pro extension.
 
-STDERR  →  Human-readable log lines (prefixed [INFO] / [WARNING] / [ERROR])
-           Safe to display in a console or discard.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STDERR  ->  Human-readable log lines (prefixed [INFO] / [WARNING] / [ERROR])
 
 Progress event shapes
-─────────────────────
-{ "event": "init",
-  "audio_duration": 123.4 }          ← total audio length in seconds
-
-{ "event": "loading_model",
-  "model": "ivrit-ai/..." }
-
-{ "event": "transcribing" }          ← model ready, transcription started
-
-{ "event": "segment",
-  "index": 5,
-  "start": 12.34,                    ← segment start time (seconds)
-  "end":   14.56,                    ← segment end time (seconds)
-  "text":  "שלום עולם",
-  "progress_pct": 42.1,              ← % of audio covered so far
-  "elapsed_sec": 8.2,                ← wall-clock seconds since start
-  "eta_sec": 11.3 }                  ← estimated seconds remaining
-
-{ "event": "done",
-  "subtitle_count": 87,
-  "elapsed_sec": 19.6,
-  "srt_path": "C:/out/subs.srt" }
-
-{ "event": "error",
-  "message": "Audio file not found" }
+---------------------
+{ "event": "init", "audio_duration": 123.4 }
+{ "event": "loading_model", "model": "ivrit-ai/...", "device": "cuda" }
+{ "event": "transcribing" }
+{ "event": "segment", "index": 5, "start": 12.34, "end": 14.56,
+  "text": "שלום עולם", "progress_pct": 42.1, "elapsed_sec": 8.2, "eta_sec": 11.3 }
+{ "event": "done", "subtitle_count": 87, "elapsed_sec": 19.6, "srt_path": "C:/out/subs.srt" }
+{ "event": "error", "message": "Audio file not found" }
 
 CUDA Setup:
-    ─────────────────────────────────────────────────────────────────
-    Set CUDA_DIR below to your CUDA installation root.
-    Example paths:
-        Windows : C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.2
-        Linux   : /usr/local/cuda-12.2
-
-    The script prepends CUDA bin + lib directories to PATH /
-    LD_LIBRARY_PATH so faster-whisper finds cuBLAS / cuDNN even when
-    they are not on the system PATH.
-    ─────────────────────────────────────────────────────────────────
+    The CUDA directory is taken from the CUDA_DIR environment variable
+    (sent by the Premiere Pro extension). The script prepends CUDA bin + lib
+    directories to PATH / LD_LIBRARY_PATH so faster-whisper finds cuBLAS /
+    cuDNN even when they are not on the system PATH.
 """
 
 import argparse
@@ -65,15 +39,13 @@ import re
 import sys
 import textwrap
 import time
-from datetime import timedelta
 from pathlib import Path
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CUDA PATH CONFIGURATION
-# Pulls the CUDA directory dynamically from the environment variable 
-# sent by the Premiere Pro extension.
 # ──────────────────────────────────────────────────────────────────────────────
 CUDA_DIR = os.environ.get("CUDA_DIR", None)
+
 
 def _configure_cuda(cuda_dir: str | None) -> None:
     """Prepend CUDA bin/lib paths so CuBLAS/CuDNN are discoverable."""
@@ -89,13 +61,18 @@ def _configure_cuda(cuda_dir: str | None) -> None:
         lib_dir = str(cuda_path / "lib" / "x64")
         current = os.environ.get("PATH", "")
         os.environ["PATH"] = bin_dir + os.pathsep + lib_dir + os.pathsep + current
+        # Python 3.8+ on Windows ignores PATH for DLL loading of extension
+        # modules, so register the directories explicitly as well.
+        for d in (bin_dir, lib_dir):
+            try:
+                os.add_dll_directory(d)
+            except (AttributeError, OSError):
+                pass
     else:
         bin_dir = str(cuda_path / "bin")
         lib_dir = str(cuda_path / "lib64")
-        current_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = bin_dir + os.pathsep + current_path
-        current_ld = os.environ.get("LD_LIBRARY_PATH", "")
-        os.environ["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + current_ld
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        os.environ["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -114,12 +91,9 @@ def _emit(event: dict) -> None:
 
 
 def _get_audio_duration(audio_path: Path) -> float | None:
-    """
-    Best-effort audio duration in seconds without heavy dependencies.
-    Uses ffprobe if available; falls back to None so the extension
-    can still show elapsed time / subtitle count without a percentage.
-    """
-    import shutil, subprocess
+    """Best-effort audio duration in seconds via ffprobe (None if unavailable)."""
+    import shutil
+    import subprocess
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         return None
@@ -144,7 +118,6 @@ def _get_audio_duration(audio_path: Path) -> float | None:
 
 def _format_timestamp(seconds: float) -> str:
     """Convert seconds to SRT timestamp: HH:MM:SS,mmm"""
-    # Work in integer milliseconds so rounding can never produce ",1000".
     total_ms = max(0, int(round(seconds * 1000)))
     total_seconds, millis = divmod(total_ms, 1000)
     hours, remainder = divmod(total_seconds, 3600)
@@ -152,33 +125,33 @@ def _format_timestamp(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 
-_TRAILING_COMMA_CHARS = ",،、"
+# ── Trailing punctuation policy ───────────────────────────────────────────────
+# A subtitle block must NEVER end with a period (or comma / ellipsis / sof-pasuq).
+# Question marks and exclamation marks are kept. Stripping is applied at
+# several stages (cue text, every wrapped block, and a final safety net right
+# before writing to disk), so no code path can leak a trailing period.
+_TRAILING_STRIP_CHARS = ".,،、…。׃"
+_INVISIBLE_CHARS = "\u200e\u200f\u200b\u202a\u202b\u202c\u2066\u2067\u2068\u2069 \t"
 
 
-def _strip_trailing_comma(text: str) -> str:
-    """A subtitle block may end with a period, but never with a comma."""
-    return text.rstrip().rstrip(_TRAILING_COMMA_CHARS).rstrip()
+def _strip_trailing_punct(text: str) -> str:
+    """Remove any trailing periods / commas / ellipses (and stray whitespace
+    or invisible bidi marks around them) from the end of a subtitle text."""
+    return text.rstrip(_TRAILING_STRIP_CHARS + _INVISIBLE_CHARS)
 
 
 def _wrap_text(text: str, max_words: int | None, max_chars: int | None) -> list[str]:
-    """
-    Split a segment's text into display lines respecting max_words and/or
-    max_chars constraints. Returns a list of lines for one SRT block.
-    """
+    """Split a segment's text into display lines respecting max_words / max_chars."""
     text = text.strip()
     if not text:
         return [""]
 
-    # 1. Split by word count first (if requested)
     if max_words:
         words = text.split()
-        word_lines = []
-        for i in range(0, len(words), max_words):
-            word_lines.append(" ".join(words[i : i + max_words]))
+        word_lines = [" ".join(words[i: i + max_words]) for i in range(0, len(words), max_words)]
     else:
         word_lines = [text]
 
-    # 2. Optionally further split each word-line by character count
     if max_chars:
         char_lines = []
         for line in word_lines:
@@ -193,88 +166,42 @@ def _wrap_text(text: str, max_words: int | None, max_chars: int | None) -> list[
 
 
 def _chunk_lines(lines: list[str], max_lines: int | None) -> list[list[str]]:
-    """
-    Group display lines into chunks of at most max_lines lines each.
-    Each chunk becomes its own SRT block. If max_lines is None, all
-    lines stay together in a single chunk (original behavior).
-    """
+    """Group display lines into chunks of at most max_lines lines each."""
     if not max_lines or max_lines <= 0:
         return [lines]
-    return [lines[i : i + max_lines] for i in range(0, len(lines), max_lines)] or [lines]
+    return [lines[i: i + max_lines] for i in range(0, len(lines), max_lines)] or [lines]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Word-level cue grouping
-#
-# Instead of dumping each whisper *segment* straight into one subtitle block,
-# we flatten every segment down to its individual timestamped words and then
-# regroup those words into short "cues". A cue ends whenever we hit a word
-# cap, a noticeable pause, sentence-ending punctuation, or the boundary of
-# the original whisper segment — whichever comes first. This produces
-# tighter, more natural-feeling subtitles than one block per raw segment.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_SENTENCE_END_CHARS = set(".?!:;׃…")  # includes Hebrew sof-pasuq (׃) and ellipsis
+_SENTENCE_END_CHARS = set(".?!:;׃…")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Hebrew / bidi text sanitizer
 #
-# Premiere Pro's caption renderer doesn't run a full Unicode bidi algorithm on
-# RTL text, so a few things reliably break:
-#   1. Sentence-ending punctuation (. ? ! : ; …) at the end of a Hebrew line
-#      sometimes gets thrown to the wrong (left) side of the screen.
-#   2. An embedded English word/number in a Hebrew sentence (e.g. a product
-#      name) can invert the reading order of the surrounding Hebrew words.
-#   3. Straight ASCII quotes used for Hebrew acronyms (e.g. צה"ל, ד"ר) are
-#      ambiguous punctuation glyphs and can confuse line-wrapping / bidi
-#      resolution; they should be the proper Hebrew gershayim (״) / geresh (׳)
-#      characters instead.
-#
-# This sanitizer fixes all three by injecting invisible Unicode directional
-# isolate characters and normalizing acronym punctuation. It is applied once,
-# on the final wrapped display lines, right before they are written into the
-# .srt file — after word/char wrapping so it can't skew any wrap-width
-# decisions.
-#
-# Important: Premiere's caption renderer does not auto-detect RTL as the base
-# direction of a Hebrew line — it defaults to LTR unless told otherwise
-# explicitly, and it does NOT honor bare neutral hints like a lone RLM
-# (Right-to-Left Mark). It DOES honor explicit directional isolates (LRI/RLI
-# ... PDI), so every fix here — embedded Latin runs and the line as a whole —
-# uses explicit isolates rather than neutral marks.
+# Premiere's caption renderer defaults to LTR and honors explicit directional
+# isolates (LRI/RLI ... PDI) but not bare neutral marks. So:
+#   1. embedded Latin runs are wrapped in LRI...PDI,
+#   2. the whole Hebrew line is wrapped in RLI...PDI,
+#   3. ASCII quotes in Hebrew acronyms become gershayim / geresh.
+# Applied once, on the final display lines, right before writing the SRT.
 # ──────────────────────────────────────────────────────────────────────────────
 
-_LRI = "\u2066"  # Left-to-Right Isolate
-_RLI = "\u2067"  # Right-to-Left Isolate
-_PDI = "\u2069"  # Pop Directional Isolate
+_LRI = "\u2066"
+_RLI = "\u2067"
+_PDI = "\u2069"
 
 _HEBREW_RANGE = "\u0590-\u05FF\uFB1D-\uFB4F"
 _HEBREW_CHAR_RE = re.compile(f"[{_HEBREW_RANGE}]")
-
-# A contiguous run of Latin letters/digits (plus common "glued" symbols like
-# . _ - / @ : + #) that starts and ends on an alnum char, e.g. "GitHub",
-# "v3-turbo", "GPT-4". Runs are matched individually (no spaces) so that
-# "New York" is isolated as two words, each staying internally LTR without
-# swallowing the Hebrew around it.
 _LATIN_RUN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._\-/@:+#]*[A-Za-z0-9])?")
-
-# ASCII quote/apostrophe sitting between two Hebrew letters == acronym marker
-# (e.g. צה"ל, ד"ר, רח' = an abbreviation, not a quotation).
 _GERSHAYIM_RE = re.compile(f'([{_HEBREW_RANGE}])"([{_HEBREW_RANGE}])')
-# Geresh after a Hebrew letter, either mid-word (רח'ל) or at a word boundary
-# like the end of an abbreviation (רח' = "street"), but not a real quote
-# (i.e. not followed by more free-standing text before the next quote).
 _GERESH_RE = re.compile(f"([{_HEBREW_RANGE}])'(?=[{_HEBREW_RANGE}]|\\B|$)")
 
 
 def _fix_hebrew_acronym_quotes(text: str) -> str:
-    """
-    Replace straight ASCII quotes/apostrophes used inside Hebrew acronyms
-    (צה"ל, ד"ר, רח') with the correct Hebrew gershayim (״) / geresh (׳)
-    punctuation, so they read as part of the word instead of as a quote
-    delimiter and don't break line-wrapping.
-    """
     prev = None
     while prev != text:
         prev = text
@@ -284,41 +211,19 @@ def _fix_hebrew_acronym_quotes(text: str) -> str:
 
 
 def _isolate_embedded_latin(text: str) -> str:
-    """
-    Wrap runs of embedded Latin letters/digits (English words, product
-    names, version numbers, acronyms like GitHub) in Unicode directional
-    isolates (LRI ... PDI) so Premiere keeps them as a contained
-    left-to-right island and does not reorder the surrounding Hebrew words.
-    """
     if not _HEBREW_CHAR_RE.search(text):
-        return text  # pure English/numeric line — nothing to isolate against
+        return text
     return _LATIN_RUN_RE.sub(lambda m: f"{_LRI}{m.group(0)}{_PDI}", text)
 
 
 def _force_rtl_paragraph(text: str) -> str:
-    """
-    Wrap the entire display line in an explicit RTL isolate (RLI ... PDI).
-
-    Premiere's caption renderer does not auto-detect RTL as the base
-    direction of a Hebrew paragraph/line — it appears to default to LTR
-    unless told otherwise explicitly. That means any neutral character at
-    the very end of the line (typically trailing punctuation) with nothing
-    after it to inherit direction from falls back to the LTR default and
-    renders on the wrong (right) side, even when it's individually isolated.
-    Forcing the whole line into an RTL isolate fixes this at the source,
-    since Premiere does honor explicit directional isolates (proven by the
-    Latin-run isolation in _isolate_embedded_latin already working).
-    """
     if not _HEBREW_CHAR_RE.search(text):
         return text
     return f"{_RLI}{text}{_PDI}"
 
 
 def sanitize_rtl_text(text: str) -> str:
-    """
-    Run the full Hebrew/bidi cleanup pipeline on one display line before it
-    is written into the SRT file.
-    """
+    """Full Hebrew/bidi cleanup for one display line."""
     if not text:
         return text
     text = _fix_hebrew_acronym_quotes(text)
@@ -329,14 +234,9 @@ def sanitize_rtl_text(text: str) -> str:
 
 def _flatten_words(segment) -> list[dict]:
     """
-    Pull per-word timestamps out of a faster-whisper segment. Falls back to
-    treating the whole segment as a single "word" if word timestamps weren't
-    produced (e.g. word_timestamps was off for this run).
-
-    Every word also carries "seg_end" (the whisper segment's end time). The
-    last cue of a segment uses it as its end time, exactly like
-    transcribe_single.py does, because whisper's per-word end timestamps
-    tend to be a bit early and would otherwise cut the subtitle short.
+    Pull per-word timestamps out of a faster-whisper segment. Falls back to a
+    single "word" if word timestamps weren't produced. Every word carries
+    "seg_end" so the last cue of a segment can end at the segment's end.
     """
     words_out: list[dict] = []
     seg_words = getattr(segment, "words", None) or []
@@ -353,6 +253,9 @@ def _flatten_words(segment) -> list[dict]:
                 "segment_boundary": i == last_idx,
                 "seg_end": segment.end,
             })
+        # If the very last word was empty, make sure the segment still closes.
+        if words_out:
+            words_out[-1]["segment_boundary"] = True
     else:
         text = segment.text.strip()
         if text:
@@ -368,14 +271,9 @@ def _flatten_words(segment) -> list[dict]:
 
 def _tighten_word_timings(words: list[dict]) -> list[dict]:
     """
-    Whisper's word timestamps tend to be "sticky" around pauses: the first
-    word after a silence often starts too early (stretched backwards into the
-    silence). This caps the duration of such a word at a plausible value
-    based on its length and pulls the stretched START back toward the actual
-    speech.
-
-    NOTE: word END times are deliberately NOT shortened anymore. Shortening
-    them caused subtitles to disappear before the speaker finished the line.
+    Whisper's first word after a silence is often stretched backwards into
+    the silence. Cap its duration to a plausible value and pull the START
+    forward. Word END times are deliberately never shortened.
     """
     prev_end = None
     for w in words:
@@ -383,13 +281,11 @@ def _tighten_word_timings(words: list[dict]) -> list[dict]:
         if s is None or e is None:
             continue
         n_chars = max(len(w["text"]), 1)
-        max_dur = 0.30 + 0.09 * n_chars  # e.g. 5-letter word ≈ 0.75s
+        max_dur = 0.30 + 0.09 * n_chars
         if e - s > max_dur:
             gap_before = (s - prev_end) if prev_end is not None else 1.0
             if gap_before >= 0.25:
-                # follows a pause -> start was dragged backwards
                 w["start"] = e - max_dur
-            # else: mid-speech -> leave the end alone (do not cut the word)
         prev_end = w["end"]
     return words
 
@@ -400,13 +296,9 @@ def _group_words_into_cues(
     silence_gap_sec: float,
 ) -> list[list[dict]]:
     """
-    Greedily walk the flattened word stream and split it into cues. A new
-    cue boundary is drawn as soon as one of these is true for the current
-    word:
-      - the cue already reached max_words_per_cue (if a cap was given)
-      - the current word ends a sentence
-      - the current word is the last word of its whisper segment
-      - the pause before the *next* word exceeds silence_gap_sec
+    Split the word stream into cues. A boundary is drawn when: the word cap
+    is reached, the word ends a sentence, the word closes its whisper
+    segment, or the pause before the next word exceeds silence_gap_sec.
     """
     cues: list[list[dict]] = []
     current: list[dict] = []
@@ -437,15 +329,12 @@ def _group_words_into_cues(
 
 def _clean_punctuation(text: str) -> str:
     """
-    פונקציית עזר להסרת סימני פיסוק מהמילים.
-    משאירה גרשיים וגרש פנימיים המרכיבים קיצורים בעברית (כמו צה"ל או ד"ר)
-    אך מסירה מירכאות חיצוניות המקיפות את המילה.
+    הסרת סימני פיסוק מהמילים. משאירה גרשיים וגרש פנימיים של קיצורים בעברית
+    (צה"ל, ד"ר) ומסירה מירכאות חיצוניות המקיפות את המילה.
     """
-    # רשימת סימני פיסוק כלליים ועבריים להסרה
-    to_remove = '.?!:;׃…,,()[]{}' + '/;<>=-+*&^%$#@~`|\\_–—'
+    to_remove = '.?!:;׃…,،()[]{}' + '/<>=-+*&^%$#@~`|\\_–—'
     table = str.maketrans("", "", to_remove)
     text = text.translate(table)
-    # הסרת מירכאות/גרשים מקצוות המילה בלבד (למשל: "שלום" -> שלום, 'היי' -> היי)
     text = text.strip('\'"')
     return text
 
@@ -460,19 +349,13 @@ def _cues_to_timed_entries(
     """
     Turn word cues into (start, end, text) triples.
 
-    Timing rules (the start time is always the real start of the first word —
-    it is never pushed later because of a previous cue):
-      - if a cue ends at the end of its whisper segment, its end time is the
-        segment's end (same as transcribe_single.py), never earlier than the
-        last word's end
-      - end_padding is added to every cue's end so the text doesn't vanish
-        the instant the last word finishes
-      - a cue shorter than min_display_sec is extended, but only as far as the
-        start of the next cue (minus a 20ms gap), so it never overlaps it
-      - if the previous cue overlaps this cue's start, the PREVIOUS cue is
-        trimmed instead of delaying this one
-      - a cue never ends with a comma (periods are kept)
-      - timing_offset shifts everything (negative = earlier, positive = later)
+      - start is always the real start of the first word
+      - a cue closing a whisper segment ends at the segment end
+      - end_padding is added to every cue's end
+      - short cues are extended up to min_display_sec but never overlap the next cue
+      - if the previous cue overlaps, the PREVIOUS cue is trimmed
+      - a cue NEVER ends with a period / comma / ellipsis
+      - timing_offset shifts everything
     """
     raw: list[list] = []  # [start, end, text]
     for cue in cues:
@@ -481,9 +364,11 @@ def _cues_to_timed_entries(
             t = w["text"]
             if remove_punctuation:
                 t = _clean_punctuation(t)
-            words_text.append(t)
+            if t:
+                words_text.append(t)
 
-        text = _strip_trailing_comma(" ".join(words_text).strip())
+        # Never ends with a period / comma — ever.
+        text = _strip_trailing_punct(" ".join(words_text).strip())
         if not text:
             continue
         start = cue[0]["start"]
@@ -491,7 +376,6 @@ def _cues_to_timed_entries(
         if start is None:
             start = raw[-1][1] if raw else 0.0
 
-        # Like transcribe_single: the last cue of a segment ends at s.end
         last = cue[-1]
         if last.get("segment_boundary") and last.get("seg_end") is not None:
             end = max(end if end is not None else 0.0, last["seg_end"])
@@ -508,7 +392,6 @@ def _cues_to_timed_entries(
         if end < start + min_display_sec:
             end = start + min_display_sec
         if next_start is not None and end > next_start - 0.02:
-            # don't overlap the next cue; keep at least a sliver of display time
             end = max(next_start - 0.02, start + 0.1)
         start += timing_offset
         end += timing_offset
@@ -528,25 +411,35 @@ def _entry_to_srt_blocks(
 ) -> list[str]:
     """
     Render one (start, end, text) entry into one or more SRT block bodies
-    ("HH:MM:SS,mmm --> HH:MM:SS,mmm\\ntext..."), without the leading index
-    number (that's assigned once, globally, at write time).
+    ("HH:MM:SS,mmm --> HH:MM:SS,mmm\\ntext...") without the index number.
     """
     lines = _wrap_text(text, None, max_chars_per_line)
     line_chunks = _chunk_lines(lines, max_lines_per_subtitle)
 
-    # Whatever ends up as the last line of a block must not end with a comma
-    # (this also covers blocks created by splitting a long cue mid-sentence).
+    # The last line of EVERY block (including blocks created by splitting a
+    # long cue mid-sentence) must never end with a period / comma / ellipsis.
+    # Empty lines left over after stripping are dropped; empty blocks skipped.
+    cleaned_chunks: list[list[str]] = []
     for chunk in line_chunks:
+        chunk = [l for l in chunk if l.strip()]
+        if not chunk:
+            continue
+        chunk[-1] = _strip_trailing_punct(chunk[-1])
+        if not chunk[-1]:
+            chunk = chunk[:-1]
+            if chunk:
+                chunk[-1] = _strip_trailing_punct(chunk[-1])
         if chunk:
-            chunk[-1] = _strip_trailing_comma(chunk[-1])
+            cleaned_chunks.append(chunk)
+    line_chunks = cleaned_chunks
+    if not line_chunks:
+        return []
 
     if len(line_chunks) == 1:
         block_text = "\n".join(sanitize_rtl_text(l) for l in line_chunks[0])
         return [f"{_format_timestamp(start)} --> {_format_timestamp(end)}\n{block_text}"]
 
-    # Split the entry's time range across chunks, proportional to each
-    # chunk's character count, so multi-block cues still roughly track
-    # the speech timing.
+    # Split the time range across chunks proportionally to character count.
     chunk_char_counts = [max(sum(len(l) for l in c), 1) for c in line_chunks]
     total_chars = sum(chunk_char_counts)
     duration = max(end - start, 0.0)
@@ -560,6 +453,27 @@ def _entry_to_srt_blocks(
         blocks.append(f"{_format_timestamp(cursor)} --> {_format_timestamp(chunk_end)}\n{block_text}")
         cursor = chunk_end
     return blocks
+
+
+def _final_period_guard(block: str) -> str:
+    """
+    Last line of defense, applied to every finished SRT block just before it
+    is written to disk. If the block's text (ignoring the invisible bidi
+    isolates Premiere needs) still ends with a period/comma/ellipsis, strip
+    it and keep the closing PDI isolate intact.
+    """
+    head, _, body = block.partition("\n")
+    if not body:
+        return block
+    lines = body.split("\n")
+    last = lines[-1]
+    closing = ""
+    while last and last[-1] in (_PDI,):
+        closing = last[-1] + closing
+        last = last[:-1]
+    last = _strip_trailing_punct(last)
+    lines[-1] = last + closing
+    return head + "\n" + "\n".join(lines)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -578,10 +492,10 @@ def transcribe(
     max_lines_per_subtitle: int | None,
     cue_gap_sec: float,
     min_cue_duration: float,
-    remove_punctuation: bool, # פרמטר חדש שהתווסף
-    custom_vocabulary: str | None = None, # מילון מונחים מותאם אישית (שמות, מונחים מקצועיים וכו')
-    timing_offset: float = 0.0, # הזזה גלובלית של כל הכתוביות בשניות (שלילי = מוקדם יותר)
-    end_padding: float = 0.15, # זמן נוסף בסוף כל כתובית כדי שלא תיעלם מוקדם מדי
+    remove_punctuation: bool,
+    custom_vocabulary: str | None = None,
+    timing_offset: float = 0.0,
+    end_padding: float = 0.15,
 ) -> None:
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -619,9 +533,7 @@ def transcribe(
     _emit({"event": "transcribing"})
     _log(f"Transcribing   : {audio_path}")
 
-    # בניית initial_prompt ממילון המונחים המותאם אישית (אם סופק).
-    # Whisper משתמש ב-prompt הזה כ"רמז הקשר" כדי להטות את הזיהוי לכיוון
-    # המונחים/שמות שהמשתמש ציין, מבלי לשנות בפועל את הטקסט המתומלל.
+    # initial_prompt ממילון המונחים: רמז הקשר למודל, לא מכריח איות.
     initial_prompt = None
     if custom_vocabulary:
         terms = [t.strip() for t in custom_vocabulary.split(",") if t.strip()]
@@ -634,13 +546,9 @@ def transcribe(
         language=language,
         beam_size=5,
         vad_filter=True,
-        # Same as transcribe_single.py: a longer silence threshold so speech
-        # edges are not clipped as often.
         vad_parameters=dict(min_silence_duration_ms=1000),
         word_timestamps=True,
         initial_prompt=initial_prompt,
-        # Same as transcribe_single.py. If you ever see repeated-text loops
-        # on long files, set this back to False.
         condition_on_previous_text=True,
     )
     _log(
@@ -657,10 +565,8 @@ def transcribe(
         segment_index += 1
         elapsed = time.monotonic() - t_start
 
-        # Progress % — based on end timestamp of this segment vs total duration
         if audio_duration and audio_duration > 0:
             progress_pct = min(segment.end / audio_duration * 100, 100.0)
-            # ETA: if we've done X% in elapsed seconds, total ≈ elapsed / (X/100)
             if progress_pct > 0:
                 eta_sec = max(0.0, elapsed / (progress_pct / 100) - elapsed)
             else:
@@ -683,8 +589,6 @@ def transcribe(
         word_stream.extend(_flatten_words(segment))
 
     # ── Regroup words into short cues, then render SRT blocks ─────────────────
-    # חלוקת המשפטים מתרחשת לפי המבנה המקורי (נקודות, פסיקים וכו') כדי לשמור על מקצב טבעי,
-    # אך רק בשלב ההרכבה הטקסט עצמו מנוקה במידה והדגל פעיל.
     word_stream = _tighten_word_timings(word_stream)
     cues = _group_words_into_cues(word_stream, max_words_per_line, cue_gap_sec)
     timed_entries = _cues_to_timed_entries(
@@ -693,7 +597,12 @@ def transcribe(
 
     srt_blocks: list[str] = []
     for start, end, text in timed_entries:
-        srt_blocks.extend(_entry_to_srt_blocks(start, end, text, max_chars_per_line, max_lines_per_subtitle))
+        srt_blocks.extend(
+            _entry_to_srt_blocks(start, end, text, max_chars_per_line, max_lines_per_subtitle)
+        )
+
+    # Final safety net: no block may end with a period, ever.
+    srt_blocks = [_final_period_guard(b) for b in srt_blocks]
 
     # ── Write SRT ─────────────────────────────────────────────────────────────
     numbered_blocks = [f"{i}\n{block}" for i, block in enumerate(srt_blocks, start=1)]
@@ -771,30 +680,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-chars-per-line", type=int, default=None, metavar="N",
                         help="Max characters per SRT display line.")
     parser.add_argument("--max-lines-per-subtitle", type=int, default=None, metavar="N",
-                        help="Max display lines per subtitle block. If a cue's wrapped "
-                             "text exceeds this, it is split into multiple consecutive "
-                             "subtitle blocks with proportionally split timing.")
+                        help="Max display lines per subtitle block. Longer cues are "
+                             "split into consecutive blocks with proportional timing.")
     parser.add_argument("--gap",         type=float, default=0.6, metavar="SEC",
-                        help="Pause (in seconds) between words that forces a new "
-                             "subtitle cue to start (default: 0.6).")
+                        help="Pause (seconds) between words that forces a new cue (default: 0.6).")
     parser.add_argument("--min-duration", type=float, default=0.4, metavar="SEC",
-                        help="Minimum on-screen duration for any single subtitle "
-                             "cue, in seconds (default: 0.4).")
-    # הוספת הפרמטר ל-CLI
+                        help="Minimum on-screen duration of a cue in seconds (default: 0.4).")
     parser.add_argument("--timing-offset", type=float, default=0.0, metavar="SEC",
                         help="Shift all subtitles by this many seconds. Negative = "
-                             "earlier, positive = later (default: 0.0). Use e.g. -0.1 "
-                             "if subtitles consistently appear too late.")
+                             "earlier, positive = later (default: 0.0).")
     parser.add_argument("--end-padding", type=float, default=0.15, metavar="SEC",
-                        help="Extra time (seconds) added to the end of every subtitle "
-                             "so it doesn't disappear before the speaker finishes "
+                        help="Extra time added to the end of every subtitle "
                              "(default: 0.15). Never overlaps the next subtitle.")
     parser.add_argument("--remove-punctuation", action="store_true",
-                        help="Remove punctuation from subtitles (e.g. periods, commas, question marks).")
+                        help="Remove all punctuation from subtitles. (Trailing periods "
+                             "and commas are ALWAYS removed, with or without this flag.)")
     parser.add_argument("--custom-vocabulary", default=None, metavar="TERMS",
-                        help="Comma-separated list of names/terms to bias the model towards "
-                             "(e.g. 'John Smith, ivrit-ai, AutoCaps'). Passed to the model as "
-                             "context, does not force exact spelling.")
+                        help="Comma-separated names/terms to bias the model towards "
+                             "(e.g. 'John Smith, ivrit-ai, AutoCaps').")
     return parser
 
 
@@ -813,7 +716,7 @@ def main() -> None:
         max_lines_per_subtitle=args.max_lines_per_subtitle,
         cue_gap_sec=args.gap,
         min_cue_duration=args.min_duration,
-        remove_punctuation=args.remove_punctuation, # העברת הפרמטר
+        remove_punctuation=args.remove_punctuation,
         custom_vocabulary=args.custom_vocabulary,
         timing_offset=args.timing_offset,
         end_padding=args.end_padding,
